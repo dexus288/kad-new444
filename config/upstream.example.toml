@@ -46,8 +46,10 @@ geometry_crs = "auto"       # auto | EPSG:4326 | EPSG:3857 | EPSG:6381…6387 (�
 # Визначення ділянки тапом по карті. Шаблон може містити:
 # {lat} {lng} {x} {y} (EPSG:3857) {zoom} {bbox} (3857, minx,miny,maxx,maxy)
 # Знайдіть у DevTools запит, який робить карта ЄДЕССБ при кліку на ділянку.
-# identify_url = "https://admin.e-construction.gov.ua/api-user/....?lat={lat}&lng={lng}"
-# identify_result_path = ""   # шлях до списку ділянок у відповіді (якщо не FeatureCollection)
+# Повні дані + повний контур одним запитом; якщо ЄДЕССБ недоступна — запасний
+# варіант через векторні тайли [layer2]. Увага: lng — довгота (~22–40), lat — широта (~44–52).
+identify_url = "https://admin.e-construction.gov.ua/api-user/dzk?lng={lng}&lat={lat}"
+identify_result_path = "result"
 
 # Синоніми полів (додаються до вбудованих). Ключ зліва — що показуємо, справа — як
 # поле може називатись у відповіді.

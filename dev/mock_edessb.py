@@ -80,6 +80,17 @@ def dzk_api(req: Request, cad_num: str = ""):
         "ppoint": "POINT(30.4067 50.3435)", "zoom_to": "POLYGON((…))", "geom": p["geom"], "centroid": p["centroid"]}}))
 
 
+@app.get("/api-user/dzk")
+def dzk_point(req: Request, lng: float, lat: float):
+    """Як справжній /api-user/dzk?lng=…&lat=…: ділянка в точці або 404."""
+    if not alive(req):
+        return touch(Response("<html><title>ЄДЕССБ - час відповіді на запит закінчився!</title></html>",
+                              status_code=403, media_type="text/html"))
+    if not (30.4055 < lng < 30.4082 and 50.3423 < lat < 50.3447):
+        return touch(JSONResponse({"error": "not_found", "error_description": "Ділянку не знайдено"}, status_code=404))
+    return dzk_api(req, "3222481600:02:001:5160")
+
+
 @app.get("/api-user/at")
 def at(req: Request, lat: float, lng: float):
     if not alive(req):

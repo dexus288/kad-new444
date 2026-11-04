@@ -198,16 +198,14 @@ class Edessb:
         return bool(self.up.vector_tile_url or self.up.identify_url
                     or (self.up.wms_url and self.up.identify_mode in ("auto", "wms")))
 
-    async def identify(self, lat: float, lng: float, zoom: int) -> list[dict]:
-        if self.up.vector_tile_url:
-            return await self._identify_vector(lat, lng)
+    def _identify_request_url(self, lat: float, lng: float, zoom: int) -> str | None:
         x, y = to_3857(lng, lat)
         if self.up.identify_url and self.up.identify_mode in ("auto", "url"):
             d = 2 * 20037508.34 / (256 * 2 ** zoom) * 3   # ~3 пікселі
-            url = self.up.identify_url.format(
+            return self.up.identify_url.format(
                 lat=lat, lng=lng, lon=lng, x=x, y=y, zoom=zoom,
                 bbox=f"{x - d},{y - d},{x + d},{y + d}")
-        elif self.up.wms_url:
+        if self.up.wms_url and self.up.identify_mode in ("auto", "wms"):
             d = 2 * 20037508.34 / (256 * 2 ** zoom) * 5
             params = {
                 "SERVICE": "WMS", "REQUEST": "GetFeatureInfo", "VERSION": self.up.wms_version,
@@ -220,14 +218,54 @@ class Edessb:
                 ("J" if self.up.wms_version.startswith("1.3") else "Y"): 50,
                 **self.up.wms_extra,
             }
-            url = self.up.wms_url + ("&" if "?" in self.up.wms_url else "?") + urlencode(params)
-        else:
-            raise UpstreamError("config", "Пошук за точкою не налаштовано")
-        resp = await self._get(url, "application/json, */*")
-        up = dataclasses.replace(self.up, result_path=self.up.identify_result_path)
-        return parse_parcels(self._json(resp), up)
+            return self.up.wms_url + ("&" if "?" in self.up.wms_url else "?") + urlencode(params)
+        return None
 
-    async def _identify_vector(self, lat: float, lng: float) -> list[dict]:
+    def _cache_parcel(self, p: dict) -> None:
+        if p.get("cadnum") and p.get("geometry") and not p.get("partial_geometry"):
+            db.conn().execute("INSERT OR REPLACE INTO parcel_cache(cadnum, data, fetched_at) VALUES (?,?,?)",
+                              (p["cadnum"], json.dumps(p, ensure_ascii=False), int(time.time())))
+
+    async def identify(self, lat: float, lng: float, zoom: int) -> list[dict]:
+        """Тап по карті.
+
+        1) ЄДЕССБ (identify_url, напр. /api-user/dzk?lng=…&lat=…) — одразу повні дані
+           і повний контур;
+        2) якщо ЄДЕССБ недоступна (сесія/мережа) або нічого не знайшла — векторні
+           тайли «сервера ДЗК (2)» (працюють і без сесії)."""
+        url = self._identify_request_url(lat, lng, zoom)
+        edessb_err: UpstreamError | None = None
+        if url:
+            try:
+                resp = await self._get(url, "application/json, */*")
+                data = self._json(resp)
+                if isinstance(data, dict) and data.get("success") is not False:
+                    self._mark_session_ok()
+                up = dataclasses.replace(self.up, result_path=self.up.identify_result_path)
+                out = []
+                for p in parse_parcels(data, up):
+                    if not p.get("geometry") and p.get("cadnum") and self.up.search_url:
+                        try:
+                            p = await self.search(p["cadnum"])
+                        except UpstreamError:
+                            pass
+                    self._cache_parcel(p)
+                    out.append(p)
+                if out or not self.has_vector:
+                    return out
+            except UpstreamError as e:
+                if e.kind != "notfound":
+                    if not self.has_vector:
+                        raise
+                    edessb_err = e
+                elif not self.has_vector:
+                    return []
+        if self.has_vector:
+            return await self._identify_vector(lat, lng, edessb_err)
+        raise UpstreamError("config", "Пошук за точкою не налаштовано")
+
+    async def _identify_vector(self, lat: float, lng: float,
+                               edessb_err: UpstreamError | None = None) -> list[dict]:
         """Тап по карті через векторні тайли «сервера ДЗК (2)».
 
         У тайлі є номер, призначення, площа, адреса — але контур обрізаний межами
@@ -248,7 +286,11 @@ class Edessb:
             p = to_parcel({"properties": h["props"], "geometry": h["geometry"]}, self.up)
             p["partial_geometry"] = True
             p.pop("area_calc_ha", None)          # площа клаптя тайла нічого не означає
-            if i == 0 and p.get("cadnum") and self.up.search_url:
+            if edessb_err is not None:
+                # ЄДЕССБ щойно відмовила — не смикаємо її вдруге, показуємо дані з тайла
+                p["warning"] = (f"Повні дані з ЄДЕССБ недоступні ({edessb_err.message}). "
+                                "Показано дані з тайла, контур неповний.")
+            elif i == 0 and p.get("cadnum") and self.up.search_url:
                 try:
                     full = await self.search(p["cadnum"])
                     for k in ("address", "purpose", "area", "unit"):
