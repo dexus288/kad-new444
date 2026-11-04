@@ -1,0 +1,6 @@
+data
+.env
+dev
+deploy
+*.md
+__pycache__

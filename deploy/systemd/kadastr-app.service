@@ -1,0 +1,18 @@
+[Unit]
+Description=Kadastr web app
+After=network-online.target
+
+[Service]
+User=kadastr
+WorkingDirectory=/opt/kadastr
+EnvironmentFile=/opt/kadastr/.env
+ExecStart=/opt/kadastr/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kadastr/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

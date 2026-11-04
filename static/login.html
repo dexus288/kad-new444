@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f6f5c">
+<title>Вхід — Кадастр</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="auth-page">
+<main class="auth">
+  <div class="brand">
+    <img src="/static/icon.svg" alt="" width="48" height="48">
+    <h1>Кадастр</h1>
+  </div>
+
+  <div class="seg" role="tablist">
+    <button type="button" data-tab="login" class="on" role="tab">Вхід</button>
+    <button type="button" data-tab="register" role="tab" id="regTab">Реєстрація</button>
+  </div>
+
+  <form id="loginForm" class="form">
+    <label>Логін<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+    <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">Увійти</button>
+  </form>
+
+  <form id="registerForm" class="form" hidden>
+    <label>Ім'я<input name="name" autocomplete="name" maxlength="60" placeholder="Як вас показувати"></label>
+    <label>Логін<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false"
+                        pattern="[A-Za-z0-9._\-]{3,32}" title="3–32 символи: латиниця, цифри, . _ -" required></label>
+    <label>Пароль<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+    <label id="inviteField" hidden>Код запрошення<input name="invite" autocapitalize="none"></label>
+    <button class="btn primary" type="submit">Зареєструватися</button>
+    <p class="hint" id="regHint">Після реєстрації адміністратор має підтвердити доступ.</p>
+  </form>
+
+  <p id="msg" class="msg" role="alert" hidden></p>
+</main>
+<script src="/static/login.js"></script>
+</body>
+</html>

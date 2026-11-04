@@ -1,0 +1,56 @@
+x-common: &common
+  restart: unless-stopped
+  env_file: .env
+  # доступ до SOCKS-проксі на самому сервері: proxy = "socks5://host.docker.internal:1080"
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  app:
+    <<: *common
+    build: .
+    image: kadastr:latest
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 60s
+      timeout: 5s
+
+  keepalive:
+    <<: *common
+    image: kadastr:latest      # той самий образ, що збирає app
+    pull_policy: never
+    depends_on:
+      - app
+    command: ["python", "keepalive.py"]
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

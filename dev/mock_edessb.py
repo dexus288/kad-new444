@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Імітація ЄДЕССБ для локальної перевірки (НЕ для продакшену).
+
+* сесія — cookie `sid`; без активності `IDLE` секунд «вмирає» (як справжня);
+* кожна відповідь продовжує сесію і ротує cookie `XSRF-TOKEN`;
+* /api-user/dzk.api.coords?cad_num=… — формат як у справжнього API;
+* /tiles/{z}/{x}/{y}.png — публічний растровий шар (без cookies, потрібні Referer+Origin), /api-user/at — тап по карті.
+
+    python dev/mock_edessb.py      # слухає :9001, логін: http://localhost:9001/login
+"""
+import secrets
+import struct
+import time
+import zlib
+
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
+
+IDLE = 120
+app = FastAPI()
+SESSIONS: dict[str, float] = {}
+
+
+def alive(req: Request) -> bool:
+    sid = req.cookies.get("sid")
+    t = SESSIONS.get(sid or "")
+    if not t or time.time() - t > IDLE:
+        SESSIONS.pop(sid or "", None)
+        return False
+    SESSIONS[sid] = time.time()
+    return True
+
+
+def touch(resp: Response) -> Response:
+    resp.set_cookie("XSRF-TOKEN", secrets.token_hex(8), path="/")
+    return resp
+
+
+@app.get("/login")
+def login():
+    sid = secrets.token_hex(12)
+    SESSIONS[sid] = time.time()
+    r = JSONResponse({"logged_in": True, "cookie": f"sid={sid}"})
+    r.set_cookie("sid", sid, path="/")
+    return r
+
+
+def parcel(lng0=30.4067, lat0=50.3435):
+    d = 0.0012
+    outer = [[lng0 - d, lat0 - d * .7], [lng0 + d, lat0 - d], [lng0 + d * 1.2, lat0 + d * .8],
+             [lng0 - d * .8, lat0 + d], [lng0 - d, lat0 - d * .7]]
+    hole = [[lng0, lat0], [lng0 + .0002, lat0], [lng0 + .0002, lat0 + .0002], [lng0, lat0 + .0002], [lng0, lat0]]
+    return {"geom": {"type": "MultiPolygon", "coordinates": [[outer, hole]]},
+            "centroid": {"type": "Point", "coordinates": [lng0, lat0]}}
+
+
+@app.get("/api-user/dzk.api.coords")
+def coords(req: Request, cad_num: str = ""):
+    if not alive(req):
+        return RedirectResponse("https://id.gov.ua/?redirect=mock", 302)
+    if cad_num.startswith("9"):
+        return touch(JSONResponse({"success": False, "type": "dzk", "message": "Ділянку не знайдено"}))
+    return touch(JSONResponse({"success": True, "type": "dzk", "result": parcel()}))
+
+
+@app.get("/api-user/at")
+def at(req: Request, lat: float, lng: float):
+    if not alive(req):
+        return RedirectResponse("https://id.gov.ua/", 302)
+    p = parcel(lng, lat)
+    return touch(JSONResponse({"type": "FeatureCollection", "features": [{
+        "type": "Feature", "geometry": p["geom"],
+        "properties": {"cadnum": "3222486200:03:002:5017", "area": "1.2345", "purpose": "01.03 Для ведення особистого селянського господарства",
+                       "ownership": "Приватна", "category": "Землі сільськогосподарського призначення", "koatuu": "3222486200"}}]}))
+
+
+def _png(w, h, pixel):
+    raw = b"".join(b"\x00" + b"".join(pixel(x, y) for x in range(w)) for y in range(h))
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+_TILE = _png(256, 256, lambda x, y: b"\xff\xa0\x00\xd0" if (x % 64 < 2 or y % 85 < 2 or (x + y) % 170 < 2) else b"\x00\x00\x00\x00")
+
+
+TILE_HITS = {"n": 0}
+
+
+@app.get("/tiles/{z}/{x}/{y}.png")
+def tile(req: Request, z: int, x: int, y: int):
+    """Як data.gki.com.ua: cookies не потрібні, але без Referer/Origin — відмова."""
+    TILE_HITS["n"] += 1
+    if not req.headers.get("referer") or not req.headers.get("origin"):
+        return Response("forbidden", status_code=403)
+    if req.cookies:
+        return Response("cookies leaked to tile server", status_code=400)
+    if y % 5 == 0:
+        return Response(status_code=404)   # порожня територія
+    return Response(_TILE, media_type="image/png")
+
+
+@app.get("/tile-hits")
+def tile_hits():
+    return TILE_HITS
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=9001, log_level="warning")

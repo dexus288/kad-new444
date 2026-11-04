@@ -1,0 +1,18 @@
+[general]
+cookie_domain = "127.0.0.1"
+referer = "http://127.0.0.1:9001/"
+[keepalive]
+keepalive_urls = ["http://127.0.0.1:9001/api-user/dzk.api.coords?cad_num=3222486200:03:002:5017"]
+keepalive_interval = 40
+keepalive_jitter = 5
+alive_json = "success"
+[parcel]
+search_url = "http://127.0.0.1:9001/api-user/dzk.api.coords?cad_num={cadnum}"
+result_path = "result"
+identify_url = "http://127.0.0.1:9001/api-user/at?lat={lat}&lng={lng}"
+[layer]
+tile_url = "http://127.0.0.1:9001/tiles/{z}/{x}/{y}.png"
+tile_session = false
+min_zoom = 13
+[layer.tile_headers]
+Origin = "http://127.0.0.1:9001"

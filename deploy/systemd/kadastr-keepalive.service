@@ -1,0 +1,18 @@
+[Unit]
+Description=Kadastr: keep EDESSB session alive
+After=network-online.target
+
+[Service]
+User=kadastr
+WorkingDirectory=/opt/kadastr
+EnvironmentFile=/opt/kadastr/.env
+ExecStart=/opt/kadastr/.venv/bin/python keepalive.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kadastr/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,83 @@
+# Звідки брати дані ДЗК. Скопіюйте у config/upstream.toml і відредагуйте.
+# Зміни підхоплюються «на льоту» і застосунком, і keepalive (без перезапуску).
+
+[general]
+# Домен, до якого прив'язуються cookies, вставлені рядком «Cookie: …»
+# (ЄДЕССБ ставить session_edessb саме на цей хост — домен має збігатися точно)
+cookie_domain = "admin.e-construction.gov.ua"
+# Звідки «прийшов» запит — як у браузері, коли ви працюєте в кабінеті
+referer = "https://admin.e-construction.gov.ua/"
+# Ставте User-Agent ТОГО браузера, з якого брали cookies (DevTools → Network → Request Headers).
+# Деякі системи прив'язують сесію до User-Agent.
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+timeout = 20
+max_parallel = 4            # одночасних запитів до ЄДЕССБ (не перевантажувати сервер)
+# Якщо VPS не в Україні, а ЄДЕССБ блокує закордонні IP — проксі з українським IP:
+# proxy = "socks5://user:pass@1.2.3.4:1080"
+
+# Додаткові заголовки, якщо SPA їх шле (подивіться у DevTools)
+[general.headers]
+Accept = "application/json, text/plain, */*"
+"X-Requested-With" = "XMLHttpRequest"
+
+[keepalive]
+# Легкі запити, які вимагають авторизації. Найкраще — той самий API пошуку з
+# РЕАЛЬНИМ існуючим кадастровим номером: тоді success=true означає «сесія жива».
+# Номер нижче перевірено — існує. Можна замінити на будь-який інший реальний.
+keepalive_urls = [
+  "https://admin.e-construction.gov.ua/api-user/dzk.api.coords?cad_num=3222486200:03:002:5017",
+]
+keepalive_interval = 240    # секунд між «пінгами» (типовий тайм-аут сесії 15–30 хв)
+keepalive_jitter = 60       # ± випадкове відхилення, щоб не виглядати як робот
+alive_json = "success"      # у JSON-відповіді це поле має бути true
+# alive_marker = ""         # або: підрядок, який має бути у відповіді
+# Якщо фінальна адреса після редиректів містить щось із цього — сесія впала
+login_markers = ["id.gov.ua", "/login", "/auth", "signin"]
+
+[parcel]
+# Пошук за кадастровим номером ({cadnum} підставляється як 1234567890:12:345:6789)
+search_url = "https://admin.e-construction.gov.ua/api-user/dzk.api.coords?cad_num={cadnum}"
+# Де лежить об'єкт у відповіді: {"success":true,"result":{"geom":…,"centroid":…}}
+result_path = "result"
+geometry_crs = "auto"       # auto | EPSG:4326 | EPSG:3857 | EPSG:6381…6387 (УСК-2000)
+
+# Визначення ділянки тапом по карті. Шаблон може містити:
+# {lat} {lng} {x} {y} (EPSG:3857) {zoom} {bbox} (3857, minx,miny,maxx,maxy)
+# Знайдіть у DevTools запит, який робить карта ЄДЕССБ при кліку на ділянку.
+# identify_url = "https://admin.e-construction.gov.ua/api-user/....?lat={lat}&lng={lng}"
+# identify_result_path = ""   # шлях до списку ділянок у відповіді (якщо не FeatureCollection)
+
+# Синоніми полів (додаються до вбудованих). Ключ зліва — що показуємо, справа — як
+# поле може називатись у відповіді.
+[parcel.fields]
+# purpose = ["purpose", "cilpr"]
+
+# Людські підписи для інших полів відповіді
+[parcel.labels]
+# koatuu = "КОАТУУ"
+
+[layer]
+# Растровий шар меж ділянок. Публічний, cookies ЄДЕССБ НЕ потрібні — лише заголовки
+# «як з кабінету ЄДЕССБ». Застосунок проксіює й кешує тайли, браузер ходить лише до вас.
+tile_url = "https://data.gki.com.ua/api-user/rtile/parcels/ua/{z}/{x}/{y}.png"
+tile_session = false        # true — слати cookies ЄДЕССБ (для шару, що вимагає входу)
+min_zoom = 13               # нижче межі не показуються (і не навантажуємо джерело)
+max_native_zoom = 19        # якщо джерело не має тайлів глибше — зменшіть, браузер розтягне
+tile_cache_hours = 72
+tile_parallel = 6
+
+# Заголовки саме для тайлів (User-Agent і Referer беруться з [general])
+[layer.tile_headers]
+Origin = "https://admin.e-construction.gov.ua"
+Accept = "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+"sec-ch-ua" = '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"'
+"sec-ch-ua-mobile" = "?0"
+"sec-ch-ua-platform" = '"Windows"'
+"sec-fetch-dest" = "image"
+"sec-fetch-mode" = "no-cors"
+"sec-fetch-site" = "same-site"
+
+# Альтернатива — WMS (тоді й тап по карті працює через GetFeatureInfo):
+# wms_url = "https://…/wms"
+# wms_layers = "…"
+# wms_version = "1.1.1"
