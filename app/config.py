@@ -88,6 +88,19 @@ DEFAULT_FIELDS = {
 }
 
 
+# Підписи полів відповіді ЄДЕССБ dzk.api, які не входять в основні
+DEFAULT_LABELS = {
+    "category_code": "Код категорії",
+    "use": "Використання",
+    "ownershipcode": "Код форми власності",
+    "valuation_value": "Нормативна грошова оцінка, грн",
+    "valuation_date": "Дата оцінки",
+    "koatuu": "КОАТУУ",
+}
+# Технічні поля, які дублюють геометрію/центроїд
+DEFAULT_HIDDEN = ["ppoint", "zoom_to", "category_code"]
+
+
 @dataclass
 class Upstream:
     # загальне
@@ -129,8 +142,8 @@ class Upstream:
     result_path: str = ""               # шлях до об'єкта у відповіді пошуку, напр. "result"
     identify_result_path: str = ""      # те саме для відповіді identify
     fields: dict = field(default_factory=lambda: dict(DEFAULT_FIELDS))
-    labels: dict = field(default_factory=dict)
-    hidden_fields: list = field(default_factory=list)
+    labels: dict = field(default_factory=lambda: dict(DEFAULT_LABELS))
+    hidden_fields: list = field(default_factory=lambda: list(DEFAULT_HIDDEN))
 
 
 def load_upstream(path: Path) -> Upstream:
@@ -157,6 +170,10 @@ def load_upstream(path: Path) -> Upstream:
             merged = dict(DEFAULT_FIELDS)
             merged.update(v)
             up.fields = merged
+        elif k == "labels":
+            up.labels = {**DEFAULT_LABELS, **v}
+        elif k == "hidden_fields":
+            up.hidden_fields = list(DEFAULT_HIDDEN) + list(v)
         elif hasattr(up, k):
             setattr(up, k, v)
     return up

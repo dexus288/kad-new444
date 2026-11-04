@@ -36,8 +36,10 @@ login_markers = ["id.gov.ua", "/login", "/auth", "signin"]
 
 [parcel]
 # Пошук за кадастровим номером ({cadnum} підставляється як 1234567890:12:345:6789)
-search_url = "https://admin.e-construction.gov.ua/api-user/dzk.api.coords?cad_num={cadnum}"
-# Де лежить об'єкт у відповіді: {"success":true,"result":{"geom":…,"centroid":…}}
+# dzk.api — геометрія + атрибути (призначення, категорія, площа, власність, оцінка).
+# (dzk.api.coords — лише геометрія.)
+search_url = "https://admin.e-construction.gov.ua/api-user/dzk.api?cad_num={cadnum}"
+# Де лежить об'єкт у відповіді: {"success":true,"result":{"cadnum":…,"purpose":…,"geom":…}}
 result_path = "result"
 geometry_crs = "auto"       # auto | EPSG:4326 | EPSG:3857 | EPSG:6381…6387 (УСК-2000)
 

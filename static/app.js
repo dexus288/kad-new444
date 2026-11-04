@@ -272,8 +272,8 @@
   })();
 
   const FIELD_LABELS = {
-    purpose: "Цільове призначення", purpose_code: "Код КВЦПЗ", ownership: "Форма власності",
-    category: "Категорія земель", address: "Адреса / розташування", unit: "Одиниця площі",
+    purpose: "Цільове призначення", purpose_code: "Код КВЦПЗ", category: "Категорія земель",
+    ownership: "Форма власності", address: "Адреса / розташування",
   };
 
   function areaText(p) {
@@ -314,11 +314,23 @@
     const bm = bookmarks.find((b) => b.cadnum === cad);
 
     const rows = [];
-    if (p.area && p.area_calc_ha) rows.push(["Площа (розрахункова)", `${fmtNum(p.area_calc_ha)} га`]);
-    else if (!p.area && p.area_calc_ha) rows.push(["Площа", `≈ ${fmtNum(p.area_calc_ha)} га <small>(за геометрією)</small>`, true]);
-    for (const k of Object.keys(FIELD_LABELS)) if (p[k] && !(k === "purpose" && subParts.length > 1)) rows.push([FIELD_LABELS[k], esc(p[k]), true]);
-    if (p.purpose && subParts.length > 1) rows.unshift([FIELD_LABELS.purpose, esc(p.purpose), true]);
-    for (const f of p.fields || []) rows.push([esc(f.label), esc(f.value), true]);
+    const official = parseFloat(String(p.area ?? "").replace(",", "."));
+    if (!isNaN(official) && p.area_calc_ha && Math.abs(p.area_calc_ha - official) / official > 0.05)
+      rows.push(["Площа за геометрією", `${fmtNum(p.area_calc_ha)} га <small>(відрізняється від офіційної)</small>`]);
+    else if (isNaN(official) && p.area_calc_ha) rows.push(["Площа", `≈ ${fmtNum(p.area_calc_ha)} га <small>(за геометрією)</small>`]);
+    for (const k of Object.keys(FIELD_LABELS)) {
+      if (!p[k]) continue;
+      // код уже є на початку тексту призначення («01.09 Для …»)
+      if (k === "purpose_code" && String(p.purpose || "").startsWith(p.purpose_code)) continue;
+      rows.push([FIELD_LABELS[k], esc(p[k])]);
+    }
+    for (const f of p.fields || []) {
+      let v = esc(f.value);
+      if (/valuation_value$/.test(f.key) && !isNaN(parseFloat(f.value))) v = fmtNum(parseFloat(f.value), 2);
+      const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(f.value));
+      if (iso) v = `${iso[3]}.${iso[2]}.${iso[1]}`;
+      rows.push([esc(f.label), v]);
+    }
     if (p.centroid) {
       const c = `${p.centroid[1].toFixed(6)}, ${p.centroid[0].toFixed(6)}`;
       rows.push(["Центр (lat, lng)", `<button class="link" data-copy="${c}" style="border:0;background:none;padding:0;color:var(--accent)">${c}</button>`, true]);

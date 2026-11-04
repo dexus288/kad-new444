@@ -63,6 +63,23 @@ def coords(req: Request, cad_num: str = ""):
     return touch(JSONResponse({"success": True, "type": "dzk", "result": parcel()}))
 
 
+@app.get("/api-user/dzk.api")
+def dzk_api(req: Request, cad_num: str = ""):
+    """Як справжній dzk.api: геометрія + атрибути."""
+    if not alive(req):
+        return touch(Response("<html><title>ЄДЕССБ - час відповіді на запит закінчився!</title></html>",
+                              status_code=403, media_type="text/html"))
+    if cad_num.startswith("9"):
+        return touch(JSONResponse({"success": False, "type": "dzk"}))
+    p = parcel()
+    return touch(JSONResponse({"success": True, "type": "dzk", "result": {
+        "cadnum": cad_num, "category": "Землі сільськогосподарського призначення", "category_code": "100",
+        "purpose_code": "01.09", "purpose": "01.09 Для дослідних і навчальних цілей", "use": "",
+        "area": "4.0110", "unit_area": "га", "ownershipcode": "", "ownership": "Державна власність",
+        "valuation_value": "1234567.89", "valuation_date": "2024-01-01",
+        "ppoint": "POINT(30.4067 50.3435)", "zoom_to": "POLYGON((…))", "geom": p["geom"], "centroid": p["centroid"]}}))
+
+
 @app.get("/api-user/at")
 def at(req: Request, lat: float, lng: float):
     if not alive(req):

@@ -170,9 +170,10 @@ def logout(request: Request):
 
 
 @app.get("/api/me")
-def me(request: Request, user: dict = Depends(current_user)):
+async def me(request: Request, user: dict = Depends(current_user)):
     st = read_status(settings)
     e = E(request)
+    await e.refresh()
     return {
         "user": public_user(user),
         "edessb_ok": st.get("ok"),
@@ -303,8 +304,9 @@ def admin_user_delete(uid: int, admin: dict = Depends(require_admin)):
 
 
 @app.get("/api/admin/edessb")
-def admin_edessb(request: Request, admin: dict = Depends(require_admin)):
+async def admin_edessb(request: Request, admin: dict = Depends(require_admin)):
     e = E(request)
+    await e.refresh()
     return {"status": read_status(settings), "cookies": e.store.summary(),
             "config": {"keepalive_urls": e.up.keepalive_urls, "interval": e.up.keepalive_interval,
                        "search_url": e.up.search_url, "layer": e.has_layer,
@@ -315,6 +317,7 @@ def admin_edessb(request: Request, admin: dict = Depends(require_admin)):
 @app.post("/api/admin/edessb/cookies")
 async def admin_set_cookies(request: Request, body: dict = Body(...), admin: dict = Depends(require_admin)):
     e = E(request)
+    await e.refresh()   # свіжий upstream.toml (назва/домен cookie)
     try:
         cookies = parse_cookie_input(str(body.get("text", "")), e.up.cookie_domain, e.up.session_cookie)
     except (ValueError, KeyError) as ex:
@@ -327,6 +330,7 @@ async def admin_set_cookies(request: Request, body: dict = Body(...), admin: dic
 
 @app.post("/api/admin/edessb/check")
 async def admin_check(request: Request, admin: dict = Depends(require_admin)):
+    await E(request).refresh()
     st = await asyncio.to_thread(check_once, settings, E(request).up, f"admin:{admin['username']}")
     return {"status": st}
 
