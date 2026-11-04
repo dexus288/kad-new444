@@ -179,7 +179,9 @@ async def me(request: Request, user: dict = Depends(current_user)):
         "edessb_ok": st.get("ok"),
         "features": {"layer": e.has_layer, "identify": e.can_identify, "search": bool(e.up.search_url),
                      "layer_min_zoom": e.up.min_zoom,
-                     "layer_max_native_zoom": e.up.max_native_zoom},
+                     "layer_max_native_zoom": e.up.max_native_zoom,
+                     "layer2": e.has_vector, "layer2_min_zoom": e.up.vector_min_zoom,
+                     "layer2_max_native_zoom": e.up.vector_max_native_zoom},
     }
 
 
@@ -218,6 +220,24 @@ async def parcel_at(request: Request, lat: float = Query(..., ge=44, le=53),
         return {"items": await E(request).identify(lat, lng, z)}
     except UpstreamError as e:
         raise upstream_http_error(e)
+
+
+@app.get("/tiles/dzk2/{z}/{x}/{y}.pbf", include_in_schema=False)
+async def dzk2_tile(request: Request, z: int, x: int, y: int, user: dict = Depends(current_user)):
+    """Векторні тайли «сервера ДЗК (2)» — віддаємо як є (gzip), браузер розпаковує сам."""
+    e = E(request)
+    if z < e.up.vector_min_zoom or z > e.up.vector_max_native_zoom:
+        return Response(status_code=204)
+    try:
+        data, cached = await e.vtile(z, x, y)
+    except UpstreamError as ex:
+        return Response(status_code=503, headers={"Cache-Control": "no-store", "Retry-After": "5",
+                                                  "X-Tile-Error": ex.message[:80]})
+    if not data:
+        return Response(status_code=204, headers={"Cache-Control": "private, max-age=3600"})
+    return Response(data, media_type="application/x-protobuf",
+                    headers={"Content-Encoding": "gzip", "Cache-Control": "private, max-age=3600",
+                             "X-Cache": "HIT" if cached else "MISS"})
 
 
 @app.get("/tiles/dzk/{z}/{x}/{y}.img", include_in_schema=False)
@@ -311,7 +331,7 @@ async def admin_edessb(request: Request, admin: dict = Depends(require_admin)):
     await e.refresh()
     return {"status": read_status(settings), "cookies": e.store.summary(),
             "config": {"keepalive_urls": e.up.keepalive_urls, "interval": e.up.keepalive_interval,
-                       "search_url": e.up.search_url, "layer": e.has_layer,
+                       "search_url": e.up.search_url, "layer": e.has_layer, "layer2": e.has_vector,
                        "identify": e.can_identify, "proxy": bool(e.up.proxy),
                        "telegram": bool(settings.telegram_token and settings.telegram_chat)}}
 

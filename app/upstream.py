@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-import random
 import dataclasses
+import gzip
+import math
+import random
 import json
 import logging
 import time
+import zlib
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -17,7 +20,8 @@ from .config import Upstream, load_upstream, settings
 from .cookiestore import CookieStore
 from .edessb import base_headers, looks_logged_out, read_status, write_status
 from .geo import tile_bbox_3857, to_3857
-from .normalize import parse_parcels
+from .mvt import features_at
+from .normalize import parse_parcels, to_parcel
 
 log = logging.getLogger("upstream")
 
@@ -40,8 +44,10 @@ class Edessb:
         self._cfg_mtime = self._mtime(settings.upstream_file)
         self.client = self._make_client()
         self.tile_client = self._make_tile_client()
+        self.vec_client = self._make_vec_client()
         self.sem = asyncio.Semaphore(self.up.max_parallel)
         self.tile_sem = asyncio.Semaphore(self.up.tile_parallel)
+        self.vec_sem = asyncio.Semaphore(self.up.vector_parallel)
         self.store.load_into(self.client.cookies.jar)
         # окремий облік змін для jar тайлів (той самий файл), щоб він не затер
         # свіжіший session_edessb старим значенням
@@ -74,21 +80,33 @@ class Edessb:
                                  proxy=self.up.proxy or None,
                                  limits=httpx.Limits(max_connections=self.up.tile_parallel * 2))
 
+    def _make_vec_client(self) -> httpx.AsyncClient:
+        """Клієнт «сервера ДЗК (2)» (векторні тайли): без cookies, свої заголовки."""
+        h = {"User-Agent": self.up.user_agent, "Accept": "application/x-protobuf,*/*",
+             "Accept-Encoding": "gzip"}
+        h.update(self.up.vector_headers or {})
+        return httpx.AsyncClient(headers=h, follow_redirects=True, timeout=self.up.timeout,
+                                 proxy=self.up.proxy or None,
+                                 limits=httpx.Limits(max_connections=self.up.vector_parallel * 2))
+
     async def refresh(self) -> None:
         """Підхопити змінений конфіг і нові cookies без перезапуску."""
         m = self._mtime(settings.upstream_file)
         if m != self._cfg_mtime:
             self._cfg_mtime = m
             self.up = load_upstream(settings.upstream_file)
-            old, old_t = self.client, self.tile_client
+            old, old_t, old_v = self.client, self.tile_client, self.vec_client
             self.client = self._make_client()
             self.tile_client = self._make_tile_client()
+            self.vec_client = self._make_vec_client()
             self.sem = asyncio.Semaphore(self.up.max_parallel)
             self.tile_sem = asyncio.Semaphore(self.up.tile_parallel)
+            self.vec_sem = asyncio.Semaphore(self.up.vector_parallel)
             self.store.load_into(self.client.cookies.jar)
             self.tile_store.load_into(self.tile_client.cookies.jar)
             await old.aclose()
             await old_t.aclose()
+            await old_v.aclose()
             log.info("upstream.toml перечитано")
         else:
             if self.store.changed_on_disk():
@@ -99,6 +117,7 @@ class Edessb:
     async def close(self) -> None:
         await self.client.aclose()
         await self.tile_client.aclose()
+        await self.vec_client.aclose()
 
     # ------------------------------------------------------------ низький рівень
     async def _get(self, url: str, accept: str) -> httpx.Response:
@@ -176,9 +195,12 @@ class Edessb:
     # ------------------------------------------------------------ точка на карті
     @property
     def can_identify(self) -> bool:
-        return bool(self.up.identify_url or (self.up.wms_url and self.up.identify_mode in ("auto", "wms")))
+        return bool(self.up.vector_tile_url or self.up.identify_url
+                    or (self.up.wms_url and self.up.identify_mode in ("auto", "wms")))
 
     async def identify(self, lat: float, lng: float, zoom: int) -> list[dict]:
+        if self.up.vector_tile_url:
+            return await self._identify_vector(lat, lng)
         x, y = to_3857(lng, lat)
         if self.up.identify_url and self.up.identify_mode in ("auto", "url"):
             d = 2 * 20037508.34 / (256 * 2 ** zoom) * 3   # ~3 пікселі
@@ -204,6 +226,85 @@ class Edessb:
         resp = await self._get(url, "application/json, */*")
         up = dataclasses.replace(self.up, result_path=self.up.identify_result_path)
         return parse_parcels(self._json(resp), up)
+
+    async def _identify_vector(self, lat: float, lng: float) -> list[dict]:
+        """Тап по карті через векторні тайли «сервера ДЗК (2)».
+
+        У тайлі є номер, призначення, площа, адреса — але контур обрізаний межами
+        тайла. Тому для знайденої ділянки беремо повні дані з ЄДЕССБ (dzk.api,
+        з кешем), а якщо ЄДЕССБ недоступна — показуємо дані з тайла."""
+        z = self.up.vector_identify_zoom
+        n = 2 ** z
+        tx = int((lng + 180) / 360 * n)
+        ty = int((1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * n)
+        gz, _ = await self.vtile(z, tx, ty)
+        if not gz:
+            return []
+        hits = features_at(gzip.decompress(gz), self.up.vector_layer, z, tx, ty, lng, lat)
+        # дрібніші ділянки першими: тап «всередині» вкладеної ділянки має знайти саме її
+        hits.sort(key=lambda h: float(h["props"].get("area") or 0))
+        out = []
+        for i, h in enumerate(hits[:5]):
+            p = to_parcel({"properties": h["props"], "geometry": h["geometry"]}, self.up)
+            p["partial_geometry"] = True
+            p.pop("area_calc_ha", None)          # площа клаптя тайла нічого не означає
+            if i == 0 and p.get("cadnum") and self.up.search_url:
+                try:
+                    full = await self.search(p["cadnum"])
+                    for k in ("address", "purpose", "area", "unit"):
+                        if p.get(k) and not full.get(k):
+                            full[k] = p[k]
+                    out.append(full)
+                    continue
+                except UpstreamError as e:
+                    if e.kind != "notfound":
+                        p["warning"] = f"Повні дані з ЄДЕССБ недоступні ({e.message}). Показано дані з тайла, контур неповний."
+            out.append(p)
+        return out
+
+    # ------------------------------------------------------------ сервер ДЗК (2): векторні тайли
+    @property
+    def has_vector(self) -> bool:
+        return bool(self.up.vector_tile_url)
+
+    async def vtile(self, z: int, x: int, y: int) -> tuple[bytes, bool]:
+        """(gzip-байти MVT або b"" для порожнього тайла, з_кешу)."""
+        if not self.has_vector:
+            raise UpstreamError("config", "Сервер ДЗК (2) не налаштовано")
+        path = settings.data_dir / "vtilecache" / str(z) / str(x) / f"{y}.pbf.gz"
+        ttl = self.up.tile_cache_hours * 3600
+        if path.exists() and time.time() - path.stat().st_mtime < ttl:
+            return path.read_bytes(), True
+        await self.refresh()
+        url = self.up.vector_tile_url.format(z=z, x=x, y=y)
+        try:
+            async with self.vec_sem:
+                # сирі байти: сервер позначає gzip навіть текстові 404 — авторозпакування падає
+                async with self.vec_client.stream("GET", url) as r:
+                    raw = b"".join([chunk async for chunk in r.aiter_raw()])
+                    status = r.status_code
+        except httpx.HTTPError as e:
+            if path.exists():
+                return path.read_bytes(), True
+            raise UpstreamError("network", f"Сервер ДЗК (2): {e.__class__.__name__}")
+        if status in (204, 404):
+            data = b""
+        elif status == 200:
+            data = raw if raw[:2] == b"\x1f\x8b" else gzip.compress(raw, 6)
+            try:
+                gzip.decompress(data)
+            except (OSError, EOFError, zlib.error):
+                raise UpstreamError("bad", "Сервер ДЗК (2): пошкоджений тайл")
+        else:
+            log.warning("Векторний тайл %s → HTTP %s", url, status)
+            if path.exists():
+                return path.read_bytes(), True
+            raise UpstreamError("busy" if status in (429, 503) else "bad", f"Сервер ДЗК (2): HTTP {status}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        return data, False
 
     # ------------------------------------------------------------ тайли шару ДЗК
     @property

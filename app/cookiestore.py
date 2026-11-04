@@ -79,7 +79,8 @@ class CookieStore:
             ensure_ascii=False, indent=1), encoding="utf-8")
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.path)
-        self._mtime = self.path.stat().st_mtime
+        # self._mtime навмисно НЕ оновлюємо: після будь-якого запису (зокрема нових
+        # cookies з адмінки) всі jar-и, що читають цей файл, мають перечитати його.
 
     # ------------------------------------------------------------ API
     def changed_on_disk(self) -> bool:

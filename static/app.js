@@ -109,6 +109,24 @@
     document.querySelectorAll("[data-base]").forEach((b) => b.classList.toggle("on", b.dataset.base === k));
   }
 
+  let dzk2Layer = null;
+  function initDzk2() {
+    if (!FEAT.layer2) return;
+    dzk2Layer = L.vectorParcels({
+      url: "/tiles/dzk2/{z}/{x}/{y}.pbf", minZoom: FEAT.layer2_min_zoom || 14, maxZoom: 20,
+      maxNativeZoom: FEAT.layer2_max_native_zoom || 18, zIndex: 6,
+    });
+    $("#dzk2Toggle").closest("label").hidden = false;
+    const on = ls.get("kd_dzk2", true);
+    $("#dzk2Toggle").checked = on;
+    if (on) dzk2Layer.addTo(map);
+    $("#dzk2Toggle").addEventListener("change", (e) => {
+      e.target.checked ? dzk2Layer.addTo(map) : map.removeLayer(dzk2Layer);
+      ls.set("kd_dzk2", e.target.checked);
+      updateLayerHint();
+    });
+  }
+
   function initDzk() {
     if (!FEAT.layer) {
       $("#dzkToggle").closest("label").hidden = true;
@@ -130,15 +148,19 @@
         tile.src = dzkLayer.getTileUrl(coords) + "?r=" + (n + 1);
       }, RETRY[n] + Math.random() * 2000);
     });
-    const on = ls.get("kd_dzk", true);
+    const on = ls.get("kd_dzk", !FEAT.layer2);
     $("#dzkToggle").checked = on;
     if (on) dzkLayer.addTo(map);
     updateLayerHint();
   }
   function updateLayerHint() {
     const h = $("#layerHint");
-    if (!FEAT.layer) { h.hidden = false; h.textContent = "Шар ділянок не налаштовано — доступний пошук за номером."; return; }
-    const min = FEAT.layer_min_zoom || 12;
+    if (!FEAT.layer && !FEAT.layer2) { h.hidden = false; h.textContent = "Шар ділянок не налаштовано — доступний пошук за номером."; return; }
+    const mins = [];
+    if (FEAT.layer && $("#dzkToggle").checked) mins.push(FEAT.layer_min_zoom || 12);
+    if (FEAT.layer2 && $("#dzk2Toggle").checked) mins.push(FEAT.layer2_min_zoom || 14);
+    if (!mins.length) { h.hidden = true; return; }
+    const min = Math.min(...mins);
     h.hidden = map.getZoom() >= min;
     h.textContent = `Межі ділянок видно при наближенні (масштаб ${min}+).`;
   }
@@ -209,7 +231,7 @@
   // ================================================================ клік по карті
   map.on("click", async (e) => {
     if (!FEAT.identify) { if (!$("#sheet").hidden) closeSheet(); return; }
-    if (map.getZoom() < 13) { toast("Наблизьте карту, щоб вибрати ділянку"); return; }
+    if (map.getZoom() < 14) { toast("Наблизьте карту, щоб вибрати ділянку"); return; }
     const seq = ++searchSeq;
     const pin = L.circleMarker(e.latlng, { radius: 6, color: "#fff", weight: 2, fillColor: "#1f6f5c", fillOpacity: 1 });
     hl.clearLayers(); hl.addLayer(pin);
@@ -353,7 +375,8 @@
     sheetHtml(`
       <button class="cad" id="cadCopy" title="Скопіювати">${esc(cad || "Ділянка")}</button>
       ${subParts.length ? `<p class="sub">${subParts.join(" · ")}</p>` : ""}
-      ${p.stale ? `<div class="warn">Показано збережені дані від ${fmtDate(p.cached_at)}. ${esc(p.warning || "")}</div>` : ""}
+      ${p.stale ? `<div class="warn">Показано збережені дані від ${fmtDate(p.cached_at)}. ${esc(p.warning || "")}</div>`
+        : p.warning ? `<div class="warn">${esc(p.warning)}</div>` : ""}
       <div class="actions">
         <button id="aCopy">${I.copy}Номер</button>
         <button id="aShare">${I.share}Поділитись</button>
@@ -432,6 +455,7 @@
     if (!dzkLayer) return;
     e.target.checked ? dzkLayer.addTo(map) : map.removeLayer(dzkLayer);
     ls.set("kd_dzk", e.target.checked);
+    updateLayerHint();
   });
   map.on("movestart", () => ($("#layersPop").hidden = true));
 
@@ -644,6 +668,7 @@
   (async () => {
     await refreshMe();
     if (!ME) return;
+    initDzk2();
     initDzk();
     loadBookmarks();
     const cad = new URLSearchParams(location.search).get("cad");

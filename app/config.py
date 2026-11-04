@@ -137,6 +137,14 @@ class Upstream:
     tile_breaker_after: int = 6        # стільки тайлів поспіль не вдалося → пауза
     tile_breaker_pause: int = 30       # сек паузи, протягом якої віддаємо лише кеш
     tile_headers: dict = field(default_factory=dict)
+    # «Сервер ДЗК (2)» — векторні тайли (MVT .pbf): межі + тап по карті без ЄДЕССБ
+    vector_tile_url: str = ""
+    vector_layer: str = "parcels_ua"
+    vector_min_zoom: int = 14
+    vector_max_native_zoom: int = 18
+    vector_identify_zoom: int = 16     # з якого масштабу брати тайл для тапу
+    vector_parallel: int = 6
+    vector_headers: dict = field(default_factory=dict)
     # пошук / ідентифікація
     search_url: str = ""
     identify_url: str = ""
@@ -156,12 +164,12 @@ def load_upstream(path: Path) -> Upstream:
         return up
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     flat: dict = {}
-    for section in ("general", "keepalive", "layer", "parcel"):
+    for section in ("general", "keepalive", "layer", "layer2", "parcel"):
         flat.update(raw.get(section, {}))
     for k, v in raw.items():
-        if not isinstance(v, dict) or k in ("headers", "fields", "labels", "wms_extra", "tile_headers"):
+        if not isinstance(v, dict) or k in ("headers", "fields", "labels", "wms_extra", "tile_headers", "vector_headers"):
             flat[k] = v
-    for hk in ("headers", "tile_headers"):
+    for hk in ("headers", "tile_headers", "vector_headers"):
         if isinstance(flat.get(hk), dict):
             bad = [k for k, v in flat[hk].items() if not isinstance(v, str)]
             for k in bad:

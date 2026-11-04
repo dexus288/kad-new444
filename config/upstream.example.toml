@@ -88,3 +88,14 @@ Accept = "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
 # wms_url = "https://…/wms"
 # wms_layers = "…"
 # wms_version = "1.1.1"
+
+[layer2]
+# «Сервер ДЗК (2)»: векторні тайли (MVT .pbf). Межі малюються в браузері, а тап по
+# карті визначає ділянку з тайла (номер, призначення, площа, адреса), після чого
+# повні дані й контур підтягуються з ЄДЕССБ. Працює і без сесії ЄДЕССБ.
+vector_tile_url = "https://tiles.geoserver.click/maps/ctiles/{z}/{x}/{y}.pbf"
+vector_layer = "parcels_ua"
+vector_min_zoom = 14        # тайли є з 13, але z13 важать ~140 КБ — для мобільного забагато
+vector_max_native_zoom = 18
+vector_identify_zoom = 16   # тайл, з якого визначаємо ділянку при тапі
+vector_parallel = 6
