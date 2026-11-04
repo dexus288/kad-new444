@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import dataclasses
 import json
 import logging
@@ -42,7 +43,13 @@ class Edessb:
         self.sem = asyncio.Semaphore(self.up.max_parallel)
         self.tile_sem = asyncio.Semaphore(self.up.tile_parallel)
         self.store.load_into(self.client.cookies.jar)
+        # окремий облік змін для jar тайлів (той самий файл), щоб він не затер
+        # свіжіший session_edessb старим значенням
+        self.tile_store = CookieStore(settings.cookies_path)
+        self.tile_store.load_into(self.tile_client.cookies.jar)
         self._last_session_mark = 0.0
+        self._tile_fails = 0           # поспіль відмов джерела тайлів
+        self._tile_pause_until = 0.0   # «запобіжник»: не смикаємо джерело, поки воно відмовляє
 
     @staticmethod
     def _mtime(p: Path) -> float:
@@ -57,7 +64,8 @@ class Edessb:
                                  limits=httpx.Limits(max_connections=self.up.max_parallel * 2))
 
     def _make_tile_client(self) -> httpx.AsyncClient:
-        """Клієнт БЕЗ cookies сесії: публічний растровий шар (data.gki.com.ua) їх не потребує."""
+        """Клієнт тайлів. Cookies йдуть лише ті, чий домен збігається з хостом тайлів
+        (напр. вставлені з «Copy as cURL» для data.gki.com.ua) — session_edessb туди не потрапляє."""
         h = {"User-Agent": self.up.user_agent, "Accept-Language": "uk-UA,uk;q=0.9"}
         if self.up.referer:
             h["Referer"] = self.up.referer
@@ -78,11 +86,15 @@ class Edessb:
             self.sem = asyncio.Semaphore(self.up.max_parallel)
             self.tile_sem = asyncio.Semaphore(self.up.tile_parallel)
             self.store.load_into(self.client.cookies.jar)
+            self.tile_store.load_into(self.tile_client.cookies.jar)
             await old.aclose()
             await old_t.aclose()
             log.info("upstream.toml перечитано")
-        elif self.store.changed_on_disk():
-            self.store.load_into(self.client.cookies.jar)
+        else:
+            if self.store.changed_on_disk():
+                self.store.load_into(self.client.cookies.jar)
+            if self.tile_store.changed_on_disk():
+                self.tile_store.load_into(self.tile_client.cookies.jar)
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -203,23 +215,54 @@ class Edessb:
         if self.up.tile_session:
             resp = await self._get(url, "image/webp,image/png,image/*;q=0.8")
         else:
-            await self.refresh()
-            async with self.tile_sem:
-                try:
-                    resp = await self.tile_client.get(url)
-                except httpx.HTTPError as e:
-                    raise UpstreamError("network", f"Тайл: {e.__class__.__name__}")
+            resp = await self._fetch_public_tile(url)
             if resp.status_code in (204, 404):
                 return None
-            if resp.status_code != 200:
-                # публічний шар — це не сесія ЄДЕССБ, статус сесії не чіпаємо
-                log.warning("Тайл %s → HTTP %s", url, resp.status_code)
-                raise UpstreamError("bad", f"Тайл: HTTP {resp.status_code}")
         if resp.status_code == 204 or not resp.content:
             return None
         if not resp.headers.get("content-type", "").startswith("image/") or not sniff(resp.content):
             raise UpstreamError("bad", "Тайл: відповідь не є зображенням")
         return resp.content
+
+    async def _fetch_public_tile(self, url: str) -> httpx.Response:
+        """Запит до публічного джерела тайлів з повторами і «запобіжником».
+
+        data.gki.com.ua (nginx за Cloudflare) обмежує частоту: на залп запитів відповідає
+        503/429/403 і якийсь час «карає». Тому: мало паралельних запитів, повтор з
+        паузою, а після серії відмов — пауза для всіх тайлів (віддаємо кеш)."""
+        if time.time() < self._tile_pause_until:
+            raise UpstreamError("busy", "Джерело тайлів перевантажене, пауза")
+        await self.refresh()
+        last = ""
+        for attempt in range(self.up.tile_retries + 1):
+            if attempt:
+                await asyncio.sleep(self.up.tile_retry_delay * attempt + random.uniform(0, 0.5))
+                if time.time() < self._tile_pause_until:
+                    break
+            async with self.tile_sem:
+                try:
+                    resp = await self.tile_client.get(url)
+                except httpx.HTTPError as e:
+                    last = e.__class__.__name__
+                    continue
+                if self.tile_store.save_from(self.tile_client.cookies.jar, "tiles"):
+                    log.info("Джерело тайлів оновило свої cookies")
+            if resp.status_code in (200, 204, 404):
+                self._tile_fails = 0
+                return resp
+            last = f"HTTP {resp.status_code}"
+            if resp.status_code not in (403, 429, 500, 502, 503, 504):
+                break
+        # статус сесії ЄДЕССБ не чіпаємо: це окреме публічне джерело
+        self._tile_fails += 1
+        if self._tile_fails >= self.up.tile_breaker_after:
+            self._tile_pause_until = time.time() + self.up.tile_breaker_pause
+            self._tile_fails = 0
+            log.warning("Джерело тайлів відмовляє (%s) — пауза %ss", last, self.up.tile_breaker_pause)
+        else:
+            log.warning("Тайл %s → %s", url, last)
+        raise UpstreamError("busy" if last.startswith(("HTTP 503", "HTTP 429", "HTTP 403")) else "bad",
+                            f"Тайл: {last}")
 
     async def tile(self, z: int, x: int, y: int) -> tuple[bytes, str, bool]:
         """Повертає (байти, content-type, з_кешу)."""

@@ -61,7 +61,7 @@ def main(argv: list[str]) -> int:
     elif cmd == "import-cookies" and args:
         up = load_upstream(settings.upstream_file)
         cookies = parse_cookie_input(open(args[0], encoding="utf-8").read(), up.cookie_domain, up.session_cookie)
-        CookieStore(settings.cookies_path).replace_all(cookies, "cli")
+        CookieStore(settings.cookies_path).merge_domains(cookies, "cli")
         print(f"Імпортовано {len(cookies)} cookies")
     elif cmd == "clear-cache":
         shutil.rmtree(settings.tile_cache_dir, ignore_errors=True)

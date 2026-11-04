@@ -83,9 +83,10 @@
   const bases = {
     sat: L.layerGroup([
       L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        { maxZoom: 20, maxNativeZoom: 19, attribution: "Esri, Maxar, Earthstar Geographics" }),
+      // підписи населених пунктів (CARTO тепер вимагає API-ключ і малює водяний знак)
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         { maxZoom: 20, maxNativeZoom: 19, attribution: "Esri" }),
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png",
-        { maxZoom: 20, subdomains: "abcd", attribution: "© OSM, CARTO", opacity: 0.9 }),
     ]),
     osm: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
       { maxZoom: 20, maxNativeZoom: 19, attribution: "© OpenStreetMap" }),
@@ -115,6 +116,19 @@
     }
     dzkLayer = L.tileLayer("/tiles/dzk/{z}/{x}/{y}.img", {
       minZoom: FEAT.layer_min_zoom || 12, maxZoom: 20, maxNativeZoom: FEAT.layer_max_native_zoom || 19, opacity: 0.9, zIndex: 5,
+      errorTileUrl: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+    });
+    // Джерело тайлів обмежує частоту запитів — тайл, що не прийшов, перезапитуємо
+    // пізніше з наростаючою паузою (розкидано в часі, щоб не створювати новий залп)
+    const RETRY = [3000, 8000, 20000];
+    dzkLayer.on("tileerror", ({ tile, coords }) => {
+      const n = +(tile.dataset.retry || 0);
+      if (n >= RETRY.length) return;
+      tile.dataset.retry = n + 1;
+      setTimeout(() => {
+        if (!tile.isConnected || !map.hasLayer(dzkLayer)) return;
+        tile.src = dzkLayer.getTileUrl(coords) + "?r=" + (n + 1);
+      }, RETRY[n] + Math.random() * 2000);
     });
     const on = ls.get("kd_dzk", true);
     $("#dzkToggle").checked = on;
@@ -535,9 +549,9 @@
         </div>
         <div class="btn-row" style="margin-top:10px"><button class="btn small" id="chk">Перевірити зараз</button></div>
         <form class="form" id="ckForm">
-          <label>Нові cookies<textarea name="text" placeholder="Значення session_edessb, або весь рядок «Cookie: …»" required></textarea></label>
+          <label>Нові cookies<textarea name="text" placeholder="Значення session_edessb, рядок «Cookie: …» або «Copy as cURL (bash)» запиту" required></textarea></label>
           <button class="btn primary">Зберегти і перевірити</button>
-          <p class="hint">Як отримати: увійдіть в ЄДЕССБ → F12 → Application → Cookies → https://admin.e-construction.gov.ua → скопіюйте Value рядка session_edessb. Не натискайте «Вийти» в ЄДЕССБ — це вб\'є сесію і тут.</p>
+          <p class="hint">Як отримати: увійдіть в ЄДЕССБ → F12 → Application → Cookies → https://admin.e-construction.gov.ua → скопіюйте Value рядка session_edessb. Для тайлів: Network → запит до data.gki.com.ua → Copy as cURL (bash) — cookies ЄДЕССБ при цьому не зачіпаються. Не натискайте «Вийти» в ЄДЕССБ — це вб\'є сесію і тут.</p>
         </form>
 
         ${pending.length ? `<h3>Очікують підтвердження (${pending.length})</h3><ul class="list">${pending.map(userRow).join("")}</ul>` : ""}

@@ -103,6 +103,8 @@ _TILE = _png(256, 256, lambda x, y: b"\xff\xa0\x00\xd0" if (x % 64 < 2 or y % 85
 
 
 TILE_HITS = {"n": 0}
+RATE = 4
+_RATE_WIN: list[float] = []
 
 
 @app.get("/tiles/{z}/{x}/{y}.png")
@@ -111,8 +113,14 @@ def tile(req: Request, z: int, x: int, y: int):
     TILE_HITS["n"] += 1
     if not req.headers.get("referer") or not req.headers.get("origin"):
         return Response("forbidden", status_code=403)
-    if req.cookies:
-        return Response("cookies leaked to tile server", status_code=400)
+    # обмеження частоти, як nginx limit_req: понад RATE запитів за секунду → 503
+    now = time.time()
+    while _RATE_WIN and _RATE_WIN[0] < now - 1:
+        _RATE_WIN.pop(0)
+    if len(_RATE_WIN) >= RATE:
+        TILE_HITS["503"] = TILE_HITS.get("503", 0) + 1
+        return Response("<html>503 Service Temporarily Unavailable</html>", status_code=503, media_type="text/html")
+    _RATE_WIN.append(now)
     if y % 5 == 0:
         return Response(status_code=404)   # порожня територія
     return Response(_TILE, media_type="image/png")

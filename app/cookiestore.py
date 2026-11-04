@@ -119,6 +119,16 @@ class CookieStore:
         self._baseline = {k: d.get("value", "") for k, d in on_disk.items()}
         return True
 
+    def merge_domains(self, cookies: list[dict], source: str) -> None:
+        """Замінює cookies лише тих доменів, що є у вводі; інші домени не чіпає.
+        (Вставка cookies для data.gki.com.ua не стирає session_edessb і навпаки.)"""
+        domains = {c.get("domain", "").lstrip(".") for c in cookies}
+        with self._locked():
+            keep = [d for d in self._read() if d.get("domain", "").lstrip(".") not in domains]
+            merged = keep + cookies
+            self._write(merged, source)
+        self._baseline = {_key(d): d.get("value", "") for d in merged}
+
     def replace_all(self, cookies: list[dict], source: str) -> None:
         with self._locked():
             self._write(cookies, source)
@@ -146,6 +156,10 @@ def parse_cookie_input(text: str, default_domain: str, session_name: str = "sess
     text = text.strip()
     if not text:
         raise ValueError("Порожній ввід")
+
+    # «Copy as cURL (bash)» з DevTools: домен береться з URL запиту
+    if text.startswith("curl "):
+        return _parse_curl(text)
 
     # Лише значення, напр. «s%3ABp-…» — так його показує DevTools → Application → Cookies
     if "=" not in text.rstrip("=") and ";" not in text and not text.startswith(("[", "{")) \
@@ -200,4 +214,44 @@ def parse_cookie_input(text: str, default_domain: str, session_name: str = "sess
                             "domain": default_domain, "path": "/", "secure": False, "expires": None})
     if not out:
         raise ValueError("Не вдалося розпізнати cookies")
+    return out
+
+
+def _parse_curl(text: str) -> list[dict]:
+    import shlex
+    from urllib.parse import urlsplit
+    try:
+        args = shlex.split(text.replace("\\\n", " "))
+    except ValueError as e:
+        raise ValueError(f"Не вдалося розібрати cURL ({e}). Копіюйте «Copy as cURL (bash)»")
+    url, raw = "", []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-H", "--header") and i + 1 < len(args):
+            h = args[i + 1]
+            if h.lower().startswith("cookie:"):
+                raw.append(h.split(":", 1)[1])
+            i += 2
+            continue
+        if a in ("-b", "--cookie") and i + 1 < len(args):
+            raw.append(args[i + 1])
+            i += 2
+            continue
+        if a.startswith("http") and not url:
+            url = a
+        i += 1
+    host = urlsplit(url).hostname if url else None
+    if not host:
+        raise ValueError("У cURL не знайдено URL")
+    out = []
+    for chunk in raw:
+        for part in chunk.split(";"):
+            if "=" in part:
+                n, v = part.strip().split("=", 1)
+                if n:
+                    out.append({"name": n.strip(), "value": v.strip(), "domain": host,
+                                "path": "/", "secure": False, "expires": None})
+    if not out:
+        raise ValueError(f"У цьому запиті до {host} немає cookies — значить, вони там не потрібні")
     return out

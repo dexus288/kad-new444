@@ -131,7 +131,11 @@ class Upstream:
     min_zoom: int = 12
     max_native_zoom: int = 19          # вище — тайли розтягуються в браузері
     tile_session: bool = False         # True — слати cookies ЄДЕССБ і вважати помилку тайла падінням сесії
-    tile_parallel: int = 6             # окремий ліміт, щоб тайли не гальмували пошук
+    tile_parallel: int = 3             # одночасних запитів до джерела тайлів (воно обмежує частоту)
+    tile_retries: int = 2              # повторів при 503/429/403/мережевій помилці
+    tile_retry_delay: float = 1.5      # сек; затримка росте з кожною спробою
+    tile_breaker_after: int = 6        # стільки тайлів поспіль не вдалося → пауза
+    tile_breaker_pause: int = 30       # сек паузи, протягом якої віддаємо лише кеш
     tile_headers: dict = field(default_factory=dict)
     # пошук / ідентифікація
     search_url: str = ""

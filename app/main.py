@@ -41,7 +41,7 @@ def E(req: Request) -> Edessb:
 
 # ---------------------------------------------------------------- middleware
 CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org "
-       "https://server.arcgisonline.com https://*.basemaps.cartocdn.com; "
+       "https://server.arcgisonline.com; "
        "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 
@@ -63,7 +63,7 @@ async def security(request: Request, call_next):
 
 
 def upstream_http_error(e: UpstreamError) -> HTTPException:
-    code = {"session": 503, "network": 502, "notfound": 404, "config": 501, "bad": 502}[e.kind]
+    code = {"session": 503, "network": 502, "notfound": 404, "config": 501, "bad": 502, "busy": 503}[e.kind]
     return HTTPException(code, {"kind": e.kind, "message": e.message})
 
 
@@ -227,9 +227,11 @@ async def dzk_tile(request: Request, z: int, x: int, y: int, user: dict = Depend
         return Response(TRANSPARENT_PNG, media_type="image/png")
     try:
         data, ct, cached = await e.tile(z, x, y)
-    except UpstreamError:
-        # прозорий тайл без кешування браузером — спробуємо ще раз пізніше
-        return Response(TRANSPARENT_PNG, media_type="image/png", headers={"Cache-Control": "no-store"})
+    except UpstreamError as ex:
+        # 503 + прозоре тіло: Leaflet отримає tileerror і перезапитає тайл пізніше
+        # (див. static/app.js), а не лишить діру назавжди
+        return Response(TRANSPARENT_PNG, status_code=503, media_type="image/png",
+                        headers={"Cache-Control": "no-store", "Retry-After": "5", "X-Tile-Error": ex.message[:80]})
     return Response(data, media_type=ct, headers={"Cache-Control": "private, max-age=3600",
                                                    "X-Cache": "HIT" if cached else "MISS"})
 
@@ -322,7 +324,7 @@ async def admin_set_cookies(request: Request, body: dict = Body(...), admin: dic
         cookies = parse_cookie_input(str(body.get("text", "")), e.up.cookie_domain, e.up.session_cookie)
     except (ValueError, KeyError) as ex:
         raise HTTPException(400, f"Не вдалося розібрати cookies: {ex}")
-    e.store.replace_all(cookies, f"admin:{admin['username']}")
+    e.store.merge_domains(cookies, f"admin:{admin['username']}")
     db.audit(admin["id"], "cookies_upload", f"{len(cookies)} шт.")
     st = await asyncio.to_thread(check_once, settings, e.up, f"admin:{admin['username']}")
     return {"count": len(cookies), "status": st}
