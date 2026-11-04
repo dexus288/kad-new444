@@ -376,7 +376,7 @@
       <button class="cad" id="cadCopy" title="Скопіювати">${esc(cad || "Ділянка")}</button>
       ${subParts.length ? `<p class="sub">${subParts.join(" · ")}</p>` : ""}
       ${p.stale ? `<div class="warn">Показано збережені дані від ${fmtDate(p.cached_at)}. ${esc(p.warning || "")}</div>`
-        : p.warning ? `<div class="warn">${esc(p.warning)}</div>` : ""}
+        : p.warning ? `<div class="warn">${p.source === "dzk2" ? "⚠️ " : ""}${esc(p.warning)}</div>` : ""}
       <div class="actions">
         <button id="aCopy">${I.copy}Номер</button>
         <button id="aShare">${I.share}Поділитись</button>

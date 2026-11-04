@@ -30,6 +30,15 @@ TRANSPARENT_PNG = bytes.fromhex(
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
 
 
+OLD_LAYER_WARNING = ("Дані зі старого шару ДЗК (2) — інформація може бути застарілою; "
+                     "контур може бути неповним.")
+
+
+def _why(e: "UpstreamError") -> str:
+    return {"session": "сесія неактивна", "network": "немає з'єднання",
+            "busy": "перевантажена"}.get(e.kind, e.message.rstrip("."))
+
+
 class UpstreamError(Exception):
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -261,11 +270,15 @@ class Edessb:
                 elif not self.has_vector:
                     return []
         if self.has_vector:
-            return await self._identify_vector(lat, lng, edessb_err)
+            # сюди потрапляємо, коли ЄДЕССБ у точці нічого не знайшла (url є, помилки немає)
+            # або недоступна (edessb_err)
+            return await self._identify_vector(lat, lng, edessb_err,
+                                               point_checked=bool(url) and edessb_err is None)
         raise UpstreamError("config", "Пошук за точкою не налаштовано")
 
     async def _identify_vector(self, lat: float, lng: float,
-                               edessb_err: UpstreamError | None = None) -> list[dict]:
+                               edessb_err: UpstreamError | None = None,
+                               point_checked: bool = False) -> list[dict]:
         """Тап по карті через векторні тайли «сервера ДЗК (2)».
 
         У тайлі є номер, призначення, площа, адреса — але контур обрізаний межами
@@ -285,22 +298,35 @@ class Edessb:
         for i, h in enumerate(hits[:5]):
             p = to_parcel({"properties": h["props"], "geometry": h["geometry"]}, self.up)
             p["partial_geometry"] = True
+            p["source"] = "dzk2"
             p.pop("area_calc_ha", None)          # площа клаптя тайла нічого не означає
+            p["warning"] = OLD_LAYER_WARNING
             if edessb_err is not None:
                 # ЄДЕССБ щойно відмовила — не смикаємо її вдруге, показуємо дані з тайла
-                p["warning"] = (f"Повні дані з ЄДЕССБ недоступні ({edessb_err.message}). "
-                                "Показано дані з тайла, контур неповний.")
+                p["warning"] = f"ЄДЕССБ недоступна ({_why(edessb_err)}). " + OLD_LAYER_WARNING
             elif i == 0 and p.get("cadnum") and self.up.search_url:
                 try:
                     full = await self.search(p["cadnum"])
                     for k in ("address", "purpose", "area", "unit"):
                         if p.get(k) and not full.get(k):
                             full[k] = p[k]
+                    full = dict(full)
+                    full["source"] = "dzk2"
+                    full["warning"] = (
+                        "Ділянку визначено за старим шаром ДЗК (2): у цій точці ЄДЕССБ зараз "
+                        "ділянки не знаходить — її могли змінити, поділити або скасувати. "
+                        "Дані нижче — з ЄДЕССБ за кадастровим номером."
+                        if point_checked else
+                        "Ділянку визначено за старим шаром ДЗК (2) — перевірте, чи це актуальна ділянка. "
+                        "Дані нижче — з ЄДЕССБ за кадастровим номером.")
                     out.append(full)
                     continue
                 except UpstreamError as e:
-                    if e.kind != "notfound":
-                        p["warning"] = f"Повні дані з ЄДЕССБ недоступні ({e.message}). Показано дані з тайла, контур неповний."
+                    if e.kind == "notfound":
+                        p["warning"] = ("Цього номера немає в ЄДЕССБ — ймовірно, ділянку скасовано або змінено. "
+                                        + OLD_LAYER_WARNING)
+                    else:
+                        p["warning"] = f"ЄДЕССБ недоступна ({_why(e)}). " + OLD_LAYER_WARNING
             out.append(p)
         return out
 
