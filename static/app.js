@@ -99,6 +99,8 @@
 
   map.on("moveend", () => ls.set("kd_view", { c: [map.getCenter().lat, map.getCenter().lng], z: map.getZoom() }));
   map.on("zoomend", updateLayerHint);
+  const zoomClass = () => map.getContainer().classList.toggle("z-lo", map.getZoom() < 16);
+  map.on("zoomend", zoomClass); zoomClass();
 
   function setBase(k) {
     if (!bases[k] || k === baseKey) return;
@@ -338,6 +340,16 @@
         interactive: false,
       });
       hl.addLayer(gj);
+      // поворотні точки з тими самими номерами, що й у режимі «на місцевості»
+      const cr = window.KDAR ? KDAR.corners(p.geometry) : { points: [] };
+      if (cr.points.length && cr.points.length <= 80) {
+        for (const c of cr.points) {
+          hl.addLayer(L.marker([c.lat, c.lng], {
+            interactive: false, keyboard: false,
+            icon: L.divIcon({ className: "corner-num", html: String(c.n), iconSize: [18, 18] }),
+          }));
+        }
+      }
       if (fit) fitParcel(gj.getBounds());
     } else if (p.centroid && fit) {
       map.setView([p.centroid[1], p.centroid[0]], 17);
@@ -383,6 +395,7 @@
         <button id="aRoute" ${p.centroid ? "" : "disabled"}>${I.route}Маршрут</button>
         <button id="aSave" class="${bm ? "on" : ""}" ${cad ? "" : "disabled"}>${I.star}${bm ? "Збережено" : "Зберегти"}</button>
       </div>
+      ${p.geometry && window.KDAR ? `<button class="btn-ar" id="aAR">📷 Точки на місцевості</button>` : ""}
       <details class="more" ${innerWidth >= 720 ? "open" : ""}>
         <summary>Деталі</summary>
         <dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("") || "<dd>Немає даних</dd>"}</dl>
@@ -399,6 +412,7 @@
       window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, "_blank", "noopener");
     };
     $("#aSave").onclick = () => toggleBookmark(p);
+    $("#aAR")?.addEventListener("click", () => KDAR.open(p));
     $("#refresh")?.addEventListener("click", (e) => { e.preventDefault(); runSearch(cad, { fit: false, fresh: true }); });
     $("#sheetBody").querySelectorAll("[data-copy]").forEach((b) => (b.onclick = () => copy(b.dataset.copy)));
     const note = $("#note");

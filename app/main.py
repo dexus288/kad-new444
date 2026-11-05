@@ -56,7 +56,7 @@ async def security(request: Request, call_next):
     resp.headers.setdefault("Content-Security-Policy", CSP)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
-    resp.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
+    resp.headers["Permissions-Policy"] = "geolocation=(self), camera=(self), microphone=(), accelerometer=(self), gyroscope=(self), magnetometer=(self)"
     if request.url.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
     return resp
