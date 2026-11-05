@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from urllib.parse import quote
@@ -17,6 +18,7 @@ from .config import BASE_DIR, settings
 from .cookiestore import parse_cookie_input
 from .edessb import check_once, read_status
 from .normalize import normalize_cadnum
+from . import timemachine as tm
 from .upstream import TRANSPARENT_PNG, Edessb, UpstreamError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -27,6 +29,7 @@ STATIC = BASE_DIR / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    tm.init()
     app.state.edessb = Edessb()
     yield
     await app.state.edessb.close()
@@ -363,6 +366,82 @@ def admin_audit(admin: dict = Depends(require_admin)):
         """SELECT a.ts, a.action, a.detail, u.username FROM audit a
            LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 100""").fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- машина часу
+def _region(rid: int) -> dict:
+    r = db.conn().execute("SELECT * FROM tm_regions WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Область не знайдено")
+    return dict(r)
+
+
+@app.get("/api/tm/regions")
+def tm_regions(user: dict = Depends(current_user)):
+    rows = db.conn().execute("SELECT * FROM tm_regions ORDER BY name").fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        snaps = db.conn().execute("SELECT id, taken_at, parcels, summary FROM tm_snapshots WHERE region_id=? "
+                                  "ORDER BY taken_at DESC", (r["id"],)).fetchall()
+        r["snapshots"] = [{**dict(s), "summary": json.loads(s["summary"]) if s["summary"] else None} for s in snaps]
+        r["tiles"] = tm.tiles_for(r)
+        r["running"] = tm.is_running(r["id"])
+        out.append(r)
+    return out
+
+
+@app.post("/api/tm/regions")
+def tm_region_add(body: dict = Body(...), admin: dict = Depends(require_admin)):
+    try:
+        b = [float(body[k]) for k in ("minlng", "minlat", "maxlng", "maxlat")]
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "Потрібні межі області")
+    name = str(body.get("name", "")).strip()[:80] or "Область"
+    interval = max(1, min(365, int(body.get("interval_days") or tm.DEFAULT_INTERVAL_DAYS)))
+    region = {"id": 0, "minlng": b[0], "minlat": b[1], "maxlng": b[2], "maxlat": b[3]}
+    n = tm.tiles_for(region)
+    if n > tm.MAX_TILES:
+        raise HTTPException(400, f"Область завелика: {n} тайлів, ліміт {tm.MAX_TILES}. Наблизьте карту.")
+    cur = db.conn().execute(
+        "INSERT INTO tm_regions(name, minlng, minlat, maxlng, maxlat, interval_days, created_by) VALUES (?,?,?,?,?,?,?)",
+        (name, *b, interval, admin["id"]))
+    region = _region(cur.lastrowid)
+    tm.snapshot_in_background(region)   # перший знімок одразу
+    db.audit(admin["id"], "tm_region_add", name)
+    return region
+
+
+@app.delete("/api/tm/regions/{rid}")
+def tm_region_delete(rid: int, admin: dict = Depends(require_admin)):
+    _region(rid)
+    db.conn().execute("DELETE FROM tm_regions WHERE id=?", (rid,))
+    import shutil
+    shutil.rmtree(settings.data_dir / "timemachine" / str(rid), ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/api/tm/regions/{rid}/snapshot")
+def tm_snapshot_now(rid: int, admin: dict = Depends(require_admin)):
+    started = tm.snapshot_in_background(_region(rid))
+    return {"started": started}
+
+
+@app.get("/api/tm/regions/{rid}/diff")
+def tm_diff(rid: int, a: int = Query(...), b: int = Query(...), user: dict = Depends(current_user)):
+    sa, sb = tm.get_snapshot(a), tm.get_snapshot(b)
+    if not sa or not sb or sa["region_id"] != rid or sb["region_id"] != rid:
+        raise HTTPException(404, "Знімок не знайдено")
+    d = tm.diff(tm.load_snapshot(sa), tm.load_snapshot(sb))
+    return {"from": sa["taken_at"], "to": sb["taken_at"], **d}
+
+
+@app.get("/api/tm/regions/{rid}/snapshots/{sid}/parcels")
+def tm_snapshot_parcels(rid: int, sid: int, user: dict = Depends(current_user)):
+    s = tm.get_snapshot(sid)
+    if not s or s["region_id"] != rid:
+        raise HTTPException(404, "Знімок не знайдено")
+    return tm.load_snapshot(s)["parcels"]
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

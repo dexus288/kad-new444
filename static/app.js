@@ -28,6 +28,8 @@
     shield: icon('<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3Z"/>'),
     out: icon('<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>'),
     list: icon('<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'),
+    clock: icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+    cam: icon('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
   };
 
   function toast(text, ms = 2200) {
@@ -412,7 +414,7 @@
       window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, "_blank", "noopener");
     };
     $("#aSave").onclick = () => toggleBookmark(p);
-    $("#aAR")?.addEventListener("click", () => KDAR.open(p));
+    $("#aAR")?.addEventListener("click", () => KDAR.open(p, { xray: false }));
     $("#refresh")?.addEventListener("click", (e) => { e.preventDefault(); runSearch(cad, { fit: false, fresh: true }); });
     $("#sheetBody").querySelectorAll("[data-copy]").forEach((b) => (b.onclick = () => copy(b.dataset.copy)));
     const note = $("#note");
@@ -528,6 +530,7 @@
           <div><b>${esc(u.name)}</b><small>@${esc(u.username)}${isAdmin ? " · адміністратор" : ""}</small></div></div>
         <ul class="menu">
           <li><button data-go="bookmarks">${I.star}Збережені ділянки<span class="badge">${bookmarks.length}</span></button></li>
+          <li><button data-go="tm">${I.clock}Машина часу кадастру</button></li>
           <li><button data-go="password">${I.key}Змінити пароль</button></li>
           ${isAdmin ? `<li><button data-go="admin">${I.shield}Адміністрування
              <span class="badge ${ME.edessb_ok === false ? "bad" : ME.edessb_ok ? "ok" : ""}">ЄДЕССБ ${ME.edessb_ok === false ? "✕" : ME.edessb_ok ? "✓" : "?"}</span></button></li>` : ""}
@@ -617,6 +620,67 @@
       $("#panelBody").querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => userAction(b.dataset.act, +b.dataset.id, b.dataset.name)));
     },
 
+    async tm() {
+      setPanel("Машина часу", `<div class="loading"><span class="spinner"></span>Завантаження…</div>`);
+      let regions;
+      try { regions = await api("/api/tm/regions"); } catch (e) { return setPanel("Машина часу", `<p class="err">${esc(e.message)}</p>`); }
+      const isAdmin = ME.user.role === "admin";
+      const b = map.getBounds();
+      const z = map.getZoom();
+      const html = `
+        <p class="hint" style="margin:8px 0 14px">Сервер регулярно робить «знімок» усіх ділянок області (зі старого шару ДЗК 2) і показує, що з'явилося, зникло чи змінило призначення й контур. Що довше спостереження — то цінніше.</p>
+        ${isAdmin ? `<button class="btn primary" id="tmAdd" ${z < 11 ? "disabled" : ""}>＋ Спостерігати область, яку зараз видно на карті</button>
+          <p class="hint">${z < 11 ? "Наблизьте карту — область завелика." : "Знімок робиться одразу, далі — раз на 30 днів."}</p>` : ""}
+        ${regions.length ? regions.map((r) => `
+          <div class="status-card" style="margin-top:12px">
+            <div class="big">${esc(r.name)} ${r.running ? `<span class="badge">знімок…</span>` : ""}</div>
+            <p>${r.tiles} тайл. · ${r.snapshots.length ? `${r.snapshots.length} знім., останній ${ago(r.snapshots[0].taken_at)} (${r.snapshots[0].parcels} діл.)` : "знімків ще немає"} · кожні ${r.interval_days} дн.</p>
+            ${r.snapshots.length >= 2 ? `
+              <div class="tm-cmp">
+                <select data-a="${r.id}">${r.snapshots.slice(1).map((s, i) => `<option value="${s.id}" ${i === 0 ? "selected" : ""}>${fmtDate(s.taken_at)}</option>`).join("")}</select>
+                <span>→</span>
+                <select data-b="${r.id}">${r.snapshots.map((s, i) => `<option value="${s.id}" ${i === 0 ? "selected" : ""}>${fmtDate(s.taken_at)}</option>`).join("")}</select>
+              </div>
+              <button class="btn small" data-cmp="${r.id}">Порівняти</button>` : r.snapshots.length === 1 ? `<p class="hint">Порівняння з'явиться після другого знімка.</p>` : ""}
+            <div class="btn-row" style="margin-top:8px">
+              <button class="btn small" data-show="${r.id}">Показати область</button>
+              ${isAdmin ? `<button class="btn small" data-snap="${r.id}" ${r.running ? "disabled" : ""}>Знімок зараз</button>
+              <button class="btn small danger" data-del="${r.id}" data-name="${esc(r.name)}">Видалити</button>` : ""}
+            </div>
+            <div class="tm-res" id="tmres${r.id}"></div>
+          </div>`).join("") : `<p class="empty">Областей спостереження ще немає.</p>`}`;
+      setPanel("Машина часу", html);
+      $("#tmAdd")?.addEventListener("click", async () => {
+        const name = prompt("Назва області (село, масив):");
+        if (!name) return;
+        try {
+          await api("/api/tm/regions", { method: "POST", body: { name, minlng: b.getWest(), minlat: b.getSouth(), maxlng: b.getEast(), maxlat: b.getNorth() } });
+          toast("Область додано, знімок робиться…"); setTimeout(() => VIEWS.tm(), 1500);
+        } catch (e) { toast(e.message, 4000); }
+      });
+      const body = $("#panelBody");
+      body.querySelectorAll("[data-show]").forEach((el) => (el.onclick = () => {
+        const r = regions.find((x) => x.id === +el.dataset.show);
+        closePanel(); map.fitBounds([[r.minlat, r.minlng], [r.maxlat, r.maxlng]]);
+        tmLayer.clearLayers(); tmLayer.addLayer(L.rectangle([[r.minlat, r.minlng], [r.maxlat, r.maxlng]], { color: "#8e44ad", weight: 2, dashArray: "6 6", fill: false, interactive: false }));
+      }));
+      body.querySelectorAll("[data-snap]").forEach((el) => (el.onclick = async () => {
+        await api(`/api/tm/regions/${el.dataset.snap}/snapshot`, { method: "POST" }); toast("Знімок запущено"); setTimeout(() => VIEWS.tm(), 2500);
+      }));
+      body.querySelectorAll("[data-del]").forEach((el) => (el.onclick = async () => {
+        if (!confirm(`Видалити область «${el.dataset.name}» з усіма знімками?`)) return;
+        await api(`/api/tm/regions/${el.dataset.del}`, { method: "DELETE" }); VIEWS.tm();
+      }));
+      body.querySelectorAll("[data-cmp]").forEach((el) => (el.onclick = async () => {
+        const rid = el.dataset.cmp;
+        const a = body.querySelector(`[data-a="${rid}"]`).value, bb = body.querySelector(`[data-b="${rid}"]`).value;
+        const res = $(`#tmres${rid}`);
+        res.innerHTML = `<div class="loading"><span class="spinner"></span></div>`;
+        try { renderDiff(res, await api(`/api/tm/regions/${rid}/diff?a=${a}&b=${bb}`)); }
+        catch (e) { res.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+      }));
+    },
+
     async audit() {
       setPanel("Журнал дій", `<div class="loading"><span class="spinner"></span></div>`);
       const rows = await api("/api/admin/audit");
@@ -625,6 +689,34 @@
         : `<p class="empty">Порожньо</p>`);
     },
   };
+
+  const tmLayer = L.featureGroup().addTo(map);
+  const TM_KINDS = [["added", "Нові ділянки", "#2ecc71"], ["removed", "Зникли", "#e74c3c"],
+                    ["purpose", "Змінили призначення", "#f39c12"], ["geometry", "Змінили контур / площу", "#3498db"]];
+  const shortPurpose = (t) => String(t || "").replace(/^\d\d\.\d\d\s*/, "").slice(0, 70);
+  function renderDiff(el, d) {
+    const total = TM_KINDS.reduce((n, [k]) => n + d[k].length, 0);
+    tmLayer.clearLayers();
+    if (!total) { el.innerHTML = `<p class="hint">Змін між ${fmtDate(d.from)} і ${fmtDate(d.to)} немає.</p>`; return; }
+    el.innerHTML = `<p class="hint">Зміни ${fmtDate(d.from)} → ${fmtDate(d.to)}: ${total}.</p><button class="btn small primary" id="tmMap">Показати всі на карті</button>` +
+      TM_KINDS.filter(([k]) => d[k].length).map(([k, title, color]) => `
+        <details class="tm-group"><summary><span class="dot" style="background:${color}"></span>${title} <span class="badge">${d[k].length}</span></summary>
+        <ul class="list">${d[k].slice(0, 300).map((x) => `<li><button class="link grow" data-cad="${esc(x.cadnum)}" data-c="${x.c ? x.c.join(",") : ""}">
+          <span class="mono">${esc(x.cadnum)}</span><small>${esc(shortPurpose(x.purpose))}${x.area ? ` · ${x.area} га` : ""}${k === "purpose" ? ` <b>(було: ${esc(shortPurpose(x.was))})</b>` : ""}${k === "geometry" && x.was_area !== x.area ? ` <b>(було ${x.was_area} га)</b>` : ""}</small></button></li>`).join("")}
+        ${d[k].length > 300 ? `<li><small>…і ще ${d[k].length - 300}</small></li>` : ""}</ul></details>`).join("");
+    for (const [k, title, color] of TM_KINDS) for (const x of d[k]) {
+      if (!x.c) continue;
+      tmLayer.addLayer(L.circleMarker([x.c[1], x.c[0]], { radius: 7, color: "#fff", weight: 1.5, fillColor: color, fillOpacity: 0.95 })
+        .bindTooltip(`${title}: ${x.cadnum}`).on("click", () => { closePanel(); runSearch(x.cadnum); }));
+    }
+    el.querySelectorAll("[data-cad]").forEach((b) => (b.onclick = () => {
+      closePanel();
+      const c = b.dataset.c ? b.dataset.c.split(",").map(Number) : null;
+      if (c) map.setView([c[1], c[0]], 17);
+      runSearch(b.dataset.cad, { fit: !c });
+    }));
+    $("#tmMap").onclick = () => { const bb = tmLayer.getBounds(); closePanel(); if (bb.isValid()) map.fitBounds(bb.pad(0.1)); };
+  }
 
   function userRow(u) {
     const self = u.id === ME.user.id;
@@ -684,10 +776,15 @@
     if (!ME) return;
     initDzk2();
     initDzk();
+    if (window.KDAR) {
+      KDAR.onOpenParcel = (cad) => runSearch(cad);
+      if (FEAT.layer2) { $("#xrayBtn").hidden = false; $("#xrayBtn").onclick = () => KDAR.open(null); }
+    }
     loadBookmarks();
     const cad = new URLSearchParams(location.search).get("cad");
     if (cad && CAD_RE.test(cad)) runSearch(cad);
     if (location.hash === "#admin" && ME.user.role === "admin") openPanel("admin");
+    if (location.hash === "#tm") openPanel("tm");
     setInterval(() => { if (!document.hidden) refreshMe(); }, 120000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshMe(); });
   })();

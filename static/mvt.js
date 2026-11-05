@@ -156,4 +156,5 @@
     },
   });
   L.vectorParcels = (opts) => new L.VectorParcels(opts);
+  window.KDMVT = { decode };
 })();

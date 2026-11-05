@@ -24,6 +24,7 @@ import time
 from app.config import load_upstream, settings
 from app.cookiestore import CookieStore
 from app.edessb import make_sync_client, ping, write_status
+from app import db, timemachine
 
 log = logging.getLogger("keepalive")
 _stop = False
@@ -74,7 +75,18 @@ def main() -> int:
              up.keepalive_interval, up.keepalive_jitter)
     cfg_mtime = settings.upstream_file.stat().st_mtime if settings.upstream_file.exists() else 0
 
+    db.init()
+    tm_last = 0.0
     while not _stop:
+        # машина часу: раз на годину перевіряємо, чи настав час знімка якоїсь області
+        if time.time() - tm_last > 3600:
+            tm_last = time.time()
+            try:
+                n = timemachine.run_due()
+                if n:
+                    log.info("Машина часу: зроблено знімків — %d", n)
+            except Exception as e:
+                log.warning("Машина часу: %s", e)
         # гаряче перечитування config/upstream.toml
         try:
             m = settings.upstream_file.stat().st_mtime

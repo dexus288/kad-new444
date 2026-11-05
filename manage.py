@@ -6,6 +6,7 @@
     python manage.py users
     python manage.py check                          # одноразова перевірка сесії ЄДЕССБ
     python manage.py import-cookies <файл>          # завантажити cookies з файлу
+    python manage.py snapshot                       # знімки машини часу для всіх областей зараз
     python manage.py clear-cache                    # очистити кеш тайлів і пошуку
 """
 from __future__ import annotations
@@ -63,6 +64,16 @@ def main(argv: list[str]) -> int:
         cookies = parse_cookie_input(open(args[0], encoding="utf-8").read(), up.cookie_domain, up.session_cookie)
         CookieStore(settings.cookies_path).merge_domains(cookies, "cli")
         print(f"Імпортовано {len(cookies)} cookies")
+    elif cmd == "snapshot":
+        from app import timemachine
+        timemachine.init()
+        regions = [dict(r) for r in c.execute("SELECT * FROM tm_regions")]
+        for r in regions:
+            print(f"«{r['name']}»…", end=" ", flush=True)
+            s = timemachine.take_snapshot(r)
+            print(f"{s['parcels']} ділянок, зміни: {s['summary'] or '—'}")
+        if not regions:
+            print("Областей спостереження немає — додайте в застосунку (Меню → Машина часу)")
     elif cmd == "clear-cache":
         shutil.rmtree(settings.tile_cache_dir, ignore_errors=True)
         c.execute("DELETE FROM parcel_cache")

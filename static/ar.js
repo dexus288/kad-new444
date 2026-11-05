@@ -103,15 +103,20 @@
   // ------------------------------------------------------------ стан і UI
   let S = null;
 
-  function open(parcel) {
-    const c = corners(parcel.geometry);
-    if (!c.points.length) { alert("Для цієї ділянки немає контуру"); return; }
+  function open(parcel, opts = {}) {
+    parcel = parcel || null;
+    const c = parcel ? corners(parcel.geometry) : { points: [], rings: [] };
+    if (parcel && !c.points.length) { alert("Для цієї ділянки немає контуру"); return; }
     close();
     S = {
       parcel, pts: c.points, rings: c.rings, mode: "cam", pos: null, rawHeading: null, headAcc: null,
       heading: null, pitch: 0, headOff: 0, posOff: [0, 0], target: null, near: false,
       fovLong: +(localStorage.getItem("kd_ar_fov") || 67), stream: null, watch: null, raf: 0,
       absolute: false,
+      // рентген: ділянки навколо з векторного шару
+      xray: opts.xray ?? !parcel, around: null, F0: null, loadedAt: null, loading: false,
+      lookIdx: 0, lookKey: "", ahead: [], here: null, voice: false, spokenKey: "", rec: null,
+      xscreen: [],
     };
     const el = document.createElement("div");
     el.id = "ar";
@@ -126,13 +131,16 @@
       </div>
       <div class="ar-top">
         <button class="ar-btn" id="arClose" aria-label="Закрити">✕</button>
-        <div class="ar-title"><b>${esc(parcel.cadnum || "Ділянка")}</b><span id="arStat">Очікую GPS…</span></div>
+        <div class="ar-title"><b>${esc(parcel ? parcel.cadnum : "Рентген кадастру")}</b><span id="arStat">Очікую GPS…</span></div>
+        <button class="ar-btn" id="arVoice" aria-label="Озвучувати" title="Озвучувати">🔇</button>
       </div>
-      ${parcel.partial_geometry ? `<div class="ar-warn">Контур неповний (старий шар) — частини точок може не бути.</div>` : ""}
+      <div class="ar-look" id="arLook" hidden></div>
+      ${parcel && parcel.partial_geometry ? `<div class="ar-warn">Контур неповний (старий шар) — частини точок може не бути.</div>` : ""}
       <div class="ar-bottom">
-        <div class="ar-target" id="arTarget">Торкніться мітки, щоб обрати ціль</div>
+        <div class="ar-target" id="arTarget">${parcel ? "Торкніться мітки, щоб обрати ціль" : "Наведіть камеру на ділянку"}</div>
         <div class="ar-row">
-          <button class="ar-btn wide" id="arMode">🧭 Стрілка</button>
+          ${parcel ? `<button class="ar-btn wide" id="arMode">🧭 Стрілка</button>` : ""}
+          <button class="ar-btn wide" id="arXray">${(opts.xray ?? !parcel) ? "🩻 Рентген: увімк." : "🩻 Рентген"}</button>
           <button class="ar-btn wide" id="arCal">🎯 Калібрувати</button>
         </div>
         <p class="ar-note">Точність орієнтовна (±3–10 м). Для виносу меж в натуру потрібен землевпорядник.</p>
@@ -142,7 +150,15 @@
     document.documentElement.classList.add("ar-open");
 
     $("#arClose").onclick = close;
-    $("#arMode").onclick = () => setMode(S.mode === "cam" ? "arrow" : "cam");
+    $("#arMode") && ($("#arMode").onclick = () => setMode(S.mode === "cam" ? "arrow" : "cam"));
+    $("#arXray").onclick = () => { S.xray = !S.xray; $("#arXray").textContent = S.xray ? "🩻 Рентген: увімк." : "🩻 Рентген"; $("#arLook").hidden = !S.xray; if (S.xray) loadAround(); };
+    $("#arVoice").onclick = toggleVoice;
+    $("#arLook").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      if (!b) return;
+      if (b.dataset.act === "next") { S.lookIdx = (S.lookIdx + 1) % Math.max(1, S.ahead.length); speakLook(true); }
+      if (b.dataset.act === "open" && b.dataset.cad) openParcel(b.dataset.cad);
+    });
     $("#arCal").onclick = openCal;
     $("#arCanvas").addEventListener("click", onTapCanvas);
     start();
@@ -185,6 +201,8 @@
   function close() {
     if (!S) return;
     cancelAnimationFrame(S.raf);
+    try { S.rec?.stop(); } catch {}
+    try { speechSynthesis?.cancel(); } catch {}
     S.stream?.getTracks().forEach((t) => t.stop());
     if (S.watch != null) navigator.geolocation.clearWatch(S.watch);
     window.removeEventListener("deviceorientationabsolute", onOri);
@@ -199,6 +217,7 @@
   function onPos(p) {
     if (!S) return;
     S.pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
+    if (S.xray) loadAround();
   }
 
   function onOri(e) {
@@ -282,13 +301,16 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const rp = rel();
-    S.screen = [];
+    S.screen = []; S.xscreen = [];
     if (!rp) return;
-    const near = rp.reduce((a, b) => (b.d < a.d ? b : a));
-    if (S.target == null) S.target = near.p.n;
-    showTarget(rp);
-    if (heading() == null) { hint(ctx, W, H, "Немає компаса — перейдіть у режим «Стрілка»"); return; }
+    if (rp.length) {
+      const near = rp.reduce((a, b) => (b.d < a.d ? b : a));
+      if (S.target == null) S.target = near.p.n;
+      showTarget(rp);
+    }
+    if (heading() == null) { hint(ctx, W, H, S.parcel ? "Немає компаса — перейдіть у режим «Стрілка»" : "Немає компаса"); return; }
     const cam = camera(W, H);
+    if (S.xray) drawXray(ctx, cam, W, H);
 
     // межі: кожне ребро розбиваємо на відрізки, щоб лінія правильно «лягала» на землю
     ctx.lineJoin = "round"; ctx.lineCap = "round";
@@ -337,7 +359,7 @@
 
     // ціль поза кадром — стрілка біля краю екрана
     const t = rp.find((r) => r.p.n === S.target);
-    if (t) {
+    if (t && !S.xray) {
       const da = wrap180(t.b - heading());
       const s = project(cam, W, H, t.dx, t.dy);
       if (!s || s[0] < 0 || s[0] > W || Math.abs(da) > 70) {
@@ -396,7 +418,252 @@
     const r = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
     const hit = (S.screen || []).filter((s) => Math.hypot(s.x - x, s.y - y) < s.r).sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y))[0];
-    if (hit) S.target = hit.n;
+    if (hit) { S.target = hit.n; return; }
+    const xh = (S.xscreen || []).filter((s) => Math.abs(s.x - x) < s.w / 2 + 8 && Math.abs(s.y - y) < 16)[0];
+    if (xh) openParcel(xh.cad);
+  }
+
+  function openParcel(cad) {
+    close();
+    window.KDAR.onOpenParcel?.(cad);
+  }
+
+  // ------------------------------------------------------------ рентген: ділянки навколо
+  const XZ = 16, XR = 300;                 // масштаб тайлів і радіус показу, м
+  async function loadAround() {
+    if (!S || !S.pos || S.loading || !window.KDMVT) return;
+    if (S.loadedAt && Math.hypot(...localFrame(S.loadedAt.lat, S.loadedAt.lng).to(S.pos.lat, S.pos.lng)) < 120) return;
+    S.loading = true;
+    const at = { lat: S.pos.lat, lng: S.pos.lng };
+    try {
+      const n = 2 ** XZ;
+      const tx = Math.floor((at.lng + 180) / 360 * n);
+      const ty = Math.floor((1 - Math.log(Math.tan(at.lat * D2R) + 1 / Math.cos(at.lat * D2R)) / Math.PI) / 2 * n);
+      const F0 = S.F0 || localFrame(at.lat, at.lng);
+      const pieces = [];
+      const jobs = [];
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) jobs.push([tx + dx, ty + dy]);
+      await Promise.all(jobs.map(async ([x, y]) => {
+        const r = await fetch(`/tiles/dzk2/${XZ}/${x}/${y}.pbf`, { credentials: "same-origin" });
+        if (r.status !== 200) return;
+        const lay = KDMVT.decode(new Uint8Array(await r.arrayBuffer()))["parcels_ua"];
+        if (!lay) return;
+        const ext = lay.extent;
+        for (const f of lay.features) {
+          if (f.type !== 3 || !f.props.cadnum) continue;
+          const rings = [], edges = [];
+          let cx = 0, cy = 0, cn = 0;
+          for (const ring of f.rings) {
+            const pts = ring.map(([px, py]) => {
+              const lng = (x + px / ext) / n * 360 - 180;
+              const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + py / ext) / n))) / D2R;
+              return F0.to(lat, lng);
+            });
+            rings.push(pts);
+            for (let i = 0; i < ring.length - 1; i++) {
+              const [ax, ay] = ring[i], [bx, by] = ring[i + 1];
+              // ребра на межі тайла — штучні, їх не малюємо
+              const border = (ax <= 0 && bx <= 0) || (ax >= ext && bx >= ext) || (ay <= 0 && by <= 0) || (ay >= ext && by >= ext);
+              edges.push({ a: pts[i], b: pts[i + 1], border });
+              cx += pts[i][0]; cy += pts[i][1]; cn++;
+            }
+          }
+          if (!cn) continue;
+          pieces.push({ cad: f.props.cadnum, props: f.props, rings, edges, c: [cx / cn, cy / cn] });
+        }
+      }));
+      S.F0 = F0; S.around = pieces; S.loadedAt = at;
+    } catch (e) { console.warn("рентген:", e); }
+    finally { S.loading = false; }
+  }
+
+  function userXY() { return S.F0 ? (([x, y]) => [x - S.posOff[0], y - S.posOff[1]])(S.F0.to(S.pos.lat, S.pos.lng)) : null; }
+
+  function pip(rings, x, y) {
+    let c = false;
+    for (const r of rings) for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [xi, yi] = r[i], [xj, yj] = r[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  }
+
+  // промінь від користувача в напрямку камери → ділянки попереду (за відстанню входу)
+  function castRay() {
+    const U = userXY(); const h = heading();
+    if (!U || h == null || !S.around) { S.ahead = []; S.here = null; return; }
+    const dx = Math.sin(h * D2R), dy = Math.cos(h * D2R);
+    const enter = new Map(); let here = null;
+    for (const p of S.around) {
+      if (!here && Math.hypot(p.c[0] - U[0], p.c[1] - U[1]) < 400 && pip(p.rings, U[0], U[1])) here = p;
+      let best = Infinity;
+      for (const e of p.edges) {
+        const ex = e.b[0] - e.a[0], ey = e.b[1] - e.a[1];
+        const den = dx * ey - dy * ex;
+        if (Math.abs(den) < 1e-9) continue;
+        const wx = e.a[0] - U[0], wy = e.a[1] - U[1];
+        const t = (wx * ey - wy * ex) / den, u = (wx * dy - wy * dx) / den;
+        if (t > 0.5 && u >= 0 && u <= 1 && t < best) best = t;
+      }
+      if (best < XR * 2) enter.set(p.cad, Math.min(enter.get(p.cad) ?? Infinity, best));
+    }
+    const hereCad = here?.cad;
+    S.here = here;
+    S.ahead = [...enter].filter(([cad]) => cad !== hereCad).sort((a, b) => a[1] - b[1]).slice(0, 6)
+      .map(([cad, d]) => ({ cad, d, props: S.around.find((p) => p.cad === cad).props }));
+    const key = `${Math.round(h / 10)}|${Math.round(U[0] / 5)}|${Math.round(U[1] / 5)}`;
+    if (key !== S.lookKey) { S.lookKey = key; S.lookIdx = 0; }
+    if (S.lookIdx >= S.ahead.length) S.lookIdx = 0;
+  }
+
+  const fmtArea = (a) => (a == null ? "" : a < 1 ? `${(a * 100).toFixed(1).replace(".", ",")} сот.` : `${String(a).replace(".", ",")} га`);
+  const shortCad = (c) => c.slice(-8);
+  const purposeText = (t) => String(t || "").replace(/^\d\d\.\d\d\s*/, "");
+
+  function drawXray(ctx, cam, W, H) {
+    const U = userXY();
+    if (!U) { if (!S.around && !S.loading) loadAround(); return; }
+    castRay();
+    const look = S.ahead[S.lookIdx];
+    const lookCad = look?.cad, hereCad = S.here?.cad;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    const labels = [];
+    for (const p of S.around || []) {
+      const d = Math.hypot(p.c[0] - U[0], p.c[1] - U[1]);
+      if (d > XR) continue;
+      const isLook = p.cad === lookCad, isHere = p.cad === hereCad;
+      const own = S.parcel && p.cad === S.parcel.cadnum;
+      if (own) continue;                                  // своя ділянка вже намальована жовтим
+      const color = isLook ? "#ff3b30" : isHere ? "#34c759" : "#22d3ee";
+      const width = isLook ? 4 : isHere ? 3 : 1.5;
+      for (const e of p.edges) {
+        if (e.border) continue;
+        const ax = e.a[0] - U[0], ay = e.a[1] - U[1], bx = e.b[0] - U[0], by = e.b[1] - U[1];
+        if (Math.min(Math.hypot(ax, ay), Math.hypot(bx, by)) > XR) continue;
+        const len = Math.hypot(bx - ax, by - ay);
+        const n = Math.max(1, Math.min(40, Math.ceil(len / 3)));
+        let path = [];
+        const flush = () => {
+          if (path.length > 1) {
+            ctx.lineWidth = width + 2; ctx.strokeStyle = "rgba(0,0,0,.4)"; ctx.beginPath();
+            path.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
+            ctx.lineWidth = width; ctx.strokeStyle = color; ctx.stroke();
+          }
+          path = [];
+        };
+        for (let k = 0; k <= n; k++) {
+          const t = k / n;
+          const s = project(cam, W, H, ax + (bx - ax) * t, ay + (by - ay) * t);
+          if (s && Math.abs(s[0]) < W * 4 && Math.abs(s[1]) < H * 4) path.push(s); else flush();
+        }
+        flush();
+      }
+      if (d < 80 || isLook || isHere) {
+        const s = project(cam, W, H, p.c[0] - U[0], p.c[1] - U[1]);
+        if (s && s[0] > -60 && s[0] < W + 60 && s[1] > 0 && s[1] < H) labels.push({ p, s, d, isLook, isHere });
+      }
+    }
+    // ближні й ціль — першими; підпис, що перекриває вже поставлений, пропускаємо
+    labels.sort((a, b) => (b.isLook - a.isLook) || (b.isHere - a.isHere) || (a.d - b.d));
+    const placed = [];
+    for (const l of labels) {
+      if (!l.isLook && placed.some((r) => Math.abs(r[0] - l.s[0]) < 95 && Math.abs(r[1] - l.s[1]) < 34)) continue;
+      placed.push(l.s);
+      const t1 = (l.isHere ? "Ви тут · " : "") + "…" + shortCad(l.p.cad);
+      const t2 = fmtArea(l.p.props.area);
+      ctx.font = `${l.isLook ? 700 : 600} ${l.isLook ? 14 : 12}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const w = Math.max(ctx.measureText(t1).width, ctx.measureText(t2).width) + 14;
+      ctx.fillStyle = l.isLook ? "rgba(255,59,48,.9)" : l.isHere ? "rgba(52,199,89,.85)" : "rgba(0,0,0,.55)";
+      roundRect(ctx, l.s[0] - w / 2, l.s[1] - 16, w, 32, 8); ctx.fill();
+      ctx.fillStyle = "#fff"; ctx.fillText(t1, l.s[0], l.s[1] - 7); ctx.font = "500 11px system-ui"; ctx.fillText(t2, l.s[0], l.s[1] + 8);
+      S.xscreen.push({ cad: l.p.cad, x: l.s[0], y: l.s[1], w });
+    }
+    renderLook(look);
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+
+  function renderLook(look) {
+    const el = $("#arLook");
+    if (!el) return;
+    el.hidden = false;
+    const here = S.here;
+    let html;
+    if (!look) {
+      html = `<div class="ar-look-main">${here ? `Ви на ділянці <b>${esc(here.cad)}</b> · ${esc(fmtArea(here.props.area))}` : S.around ? "Попереду ділянок не видно" : "Завантажую ділянки навколо…"}</div>`;
+    } else {
+    const more = S.ahead.length > 1 ? ` · ${S.lookIdx + 1}/${S.ahead.length}` : "";
+    html = `
+      <div class="ar-look-main"><span class="ar-look-k">Перед вами${more}:</span> <b data-act="open" data-cad="${esc(look.cad)}">${esc(look.cad)}</b></div>
+      <div class="ar-look-sub">${esc(fmtArea(look.props.area))} · ${esc(purposeText(look.props.purpose)) || "призначення не вказано"} · ${look.d < 10 ? fmtD(look.d) : Math.round(look.d / 5) * 5 + " м"}</div>
+      <div class="ar-look-row"><button class="ar-btn" data-act="open" data-cad="${esc(look.cad)}">Картка</button>
+        ${S.ahead.length > 1 ? `<button class="ar-btn" data-act="next">Далі ▸</button>` : ""}</div>`;
+    }
+    // перемальовуємо лише при зміні — інакше кнопки «втікають» з-під пальця
+    if (html !== S.lookHtml) { S.lookHtml = html; el.innerHTML = html; }
+    speakLook(false);
+  }
+
+  // ------------------------------------------------------------ голос
+  function toggleVoice() {
+    S.voice = !S.voice;
+    $("#arVoice").textContent = S.voice ? "🔊" : "🔇";
+    if (S.voice) {
+      S.spokenKey = "";
+      say("Озвучування ввімкнено. Скажіть «далі», щоб перейти до наступної ділянки.");
+      startRecognition();
+    } else { try { speechSynthesis.cancel(); } catch {} try { S.rec?.stop(); } catch {} S.rec = null; }
+  }
+
+  function say(text) {
+    if (!("speechSynthesis" in window)) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "uk-UA";
+      const v = speechSynthesis.getVoices().find((x) => /^uk/i.test(x.lang));
+      if (v) u.voice = v;
+      u.rate = 1.05;
+      speechSynthesis.speak(u);
+    } catch {}
+  }
+
+  let speakTimer = 0;
+  function speakLook(force) {
+    if (!S?.voice) return;
+    const look = S.ahead[S.lookIdx];
+    const key = look ? `${look.cad}|${Math.round(look.d / 10)}` : S.here ? `here|${S.here.cad}` : "none";
+    if (!force && key.split("|")[0] === S.spokenKey.split("|")[0]) return;
+    clearTimeout(speakTimer);
+    speakTimer = setTimeout(() => {
+      if (!S) return;
+      S.spokenKey = key;
+      if (look) {
+        const sp = look.props.area == null ? "" : look.props.area < 1 ? `${Math.round(look.props.area * 100)} соток` : `${look.props.area} гектара`;
+        say(`Перед вами ділянка ${shortCad(look.cad).replace(":", ", ")}. ${sp}. ${purposeText(look.props.purpose).split(",")[0]}. ${Math.round(look.d)} метрів.`);
+      } else if (S.here) say(`Ви на ділянці ${shortCad(S.here.cad).replace(":", ", ")}.`);
+    }, force ? 0 : 1200);
+  }
+
+  function startRecognition() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    try {
+      const rec = new SR();
+      rec.lang = "uk-UA"; rec.continuous = true; rec.interimResults = false;
+      rec.onresult = (e) => {
+        const t = Array.from(e.results).slice(-1)[0]?.[0]?.transcript?.toLowerCase() || "";
+        if (/далі|наступн|next/.test(t)) { if (S.ahead.length) { S.lookIdx = (S.lookIdx + 1) % S.ahead.length; speakLook(true); } }
+        else if (/стоп|тихо|вимкн/.test(t)) toggleVoice();
+      };
+      rec.onend = () => { if (S?.voice && S.rec === rec) { try { rec.start(); } catch {} } };
+      rec.onerror = () => {};
+      rec.start();
+      S.rec = rec;
+    } catch { S.rec = null; }
   }
 
   // ------------------------------------------------------------ калібрування
@@ -427,5 +694,5 @@
   }
 
   addEventListener("keydown", (e) => { if (e.key === "Escape" && S) close(); });
-  window.KDAR = { open, close, corners, _state: () => S };
+  window.KDAR = { open, close, corners, _state: () => S, onOpenParcel: null };
 })();
