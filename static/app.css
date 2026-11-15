@@ -293,11 +293,3 @@ a { color: var(--accent); }
 .tm-res { margin-top: 6px; }
 
 .ar-top { align-items: center; }
-#arVoice { width: 44px; height: 44px; padding: 0; font-size: 18px; flex: none; margin-left: auto; }
-.ar-look { position: absolute; left: 10px; right: 10px; top: calc(var(--sat) + 68px); background: rgba(0,0,0,.6);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-radius: 14px; padding: 10px 12px; font-size: 14px; }
-.ar-look-k { opacity: .8; }
-.ar-look-main b { font-variant-numeric: tabular-nums; font-size: 16px; }
-.ar-look-sub { opacity: .9; margin-top: 3px; font-size: 13px; }
-.ar-look-row { display: flex; gap: 8px; margin-top: 8px; }
-.ar-look-row .ar-btn { padding: 8px 14px; font-size: 14px; }
