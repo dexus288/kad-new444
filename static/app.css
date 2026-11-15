@@ -251,7 +251,7 @@ a { color: var(--accent); }
 .ar-open, .ar-open body { overflow: hidden; }
 #ar { position: fixed; inset: 0; z-index: 3000; background: #000; color: #fff; }
 #arVideo, #arCanvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-#arCanvas { touch-action: manipulation; }
+#arCanvas { touch-action: none; }
 .ar-cross { position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; pointer-events: none;
   background: linear-gradient(#fff,#fff) center/2px 100% no-repeat, linear-gradient(#fff,#fff) center/100% 2px no-repeat;
   opacity: .75; filter: drop-shadow(0 0 2px #000); }

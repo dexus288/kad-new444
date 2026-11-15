@@ -103,6 +103,7 @@
       heading: null, pitch: 0, headOff: 0, posOff: [0, 0], target: null, near: false,
       fovLong: +(localStorage.getItem("kd_ar_fov") || 67), stream: null, watch: null, raf: 0,
       absolute: false, rawBasis: null, yawOff: null, oriCount: 0,
+      pitchOff: +(localStorage.getItem("kd_ar_pitch") || 0), f: 600,
       fixes: [], frozen: null, shown: null,
       // рентген: ділянки навколо з векторного шару
       xray: opts.xray ?? !parcel, around: null, F0: null, loadedAt: null, loading: false, xscreen: [],
@@ -131,7 +132,7 @@
           <button class="ar-btn wide" id="arCal">🎯 Калібрувати</button>
         </div>
         <div class="ar-row"><button class="ar-btn wide" id="arFreeze">📌 Зафіксувати</button></div>
-        <p class="ar-note">Точність орієнтовна (±3–10 м). Для виносу меж в натуру потрібен землевпорядник.</p>
+        <p class="ar-note">Потягніть пальцем по екрану, щоб покласти межі на землю й сумістити з місцевістю. Точність орієнтовна (±3–10 м). Для виносу меж в натуру потрібен землевпорядник.</p>
       </div>
       <div class="ar-sheet" id="arCalSheet" hidden></div>`;
     document.body.appendChild(el);
@@ -142,7 +143,8 @@
     $("#arXray").onclick = () => { S.xray = !S.xray; $("#arXray").textContent = S.xray ? "🩻 Рентген: увімк." : "🩻 Рентген"; if (S.xray) loadAround(); };
     $("#arCal").onclick = openCal;
     $("#arFreeze").onclick = toggleFreeze;
-    $("#arCanvas").addEventListener("click", onTapCanvas);
+    $("#arCanvas").addEventListener("click", (e) => { if (!dragMoved) onTapCanvas(e); });
+    bindDrag($("#arCanvas"));
     start();
   }
 
@@ -284,7 +286,14 @@
   function cameraBasis() {
     if (!S.rawBasis || S.yawOff == null) return null;
     const d = S.yawOff + S.headOff;
-    return { fw: rotZ(S.rawBasis.fw, d), rt: rotZ(S.rawBasis.rt, d), up: rotZ(S.rawBasis.up, d) };
+    const fw = rotZ(S.rawBasis.fw, d), rt = rotZ(S.rawBasis.rt, d), up = rotZ(S.rawBasis.up, d);
+    // поправка нахилу: «+» — вважаємо, що камера дивиться вище, отже земля і межі опускаються
+    const c = Math.cos(S.pitchOff * D2R), sn = Math.sin(S.pitchOff * D2R);
+    return {
+      fw: [fw[0] * c + up[0] * sn, fw[1] * c + up[1] * sn, fw[2] * c + up[2] * sn],
+      up: [up[0] * c - fw[0] * sn, up[1] * c - fw[1] * sn, up[2] * c - fw[2] * sn],
+      rt,
+    };
   }
   const heading = () => { const b = cameraBasis(); return b ? yawOf(b.fw) : null; };
 
@@ -304,14 +313,15 @@
     const vw = v.videoWidth || W, vh = v.videoHeight || H;
     const fv = (Math.max(vw, vh) / 2) / Math.tan(S.fovLong / 2 * D2R);
     const scale = Math.max(W / vw, H / vh);              // object-fit: cover
-    return { f: fv * scale, ...cameraBasis() };
+    S.f = fv * scale;
+    return { f: S.f, ...cameraBasis() };
   }
 
-  function project(cam, W, H, dx, dy) {
-    const v = [dx, dy, -EYE];
+  function project(cam, W, H, dx, dy, h = 0) {
+    const v = [dx, dy, h - EYE];
     const z = v[0] * cam.fw[0] + v[1] * cam.fw[1] + v[2] * cam.fw[2];
     if (z < 0.5) return null;
-    const x = v[0] * cam.rt[0] + v[1] * cam.rt[1];
+    const x = v[0] * cam.rt[0] + v[1] * cam.rt[1] + v[2] * cam.rt[2];
     const y = v[0] * cam.up[0] + v[1] * cam.up[1] + v[2] * cam.up[2];
     return [W / 2 + cam.f * x / z, H / 2 - cam.f * y / z];
   }
@@ -363,10 +373,12 @@
         if (Math.min(a.d, b.d) > MAX_DIST) continue;
         const len = Math.hypot(b.dx - a.dx, b.dy - a.dy);
         const n = Math.max(2, Math.min(150, Math.ceil(len / 1.5)));
+        // ближня межа товща, дальня тонша — так вона читається як лінія на землі
+        const lw = Math.max(2, Math.min(8, 60 / Math.max(4, Math.min(a.d, b.d))));
         let path = [];
         const flush = () => {
           if (path.length > 1) {
-            for (const [w, c] of [[6, "rgba(0,0,0,.45)"], [3, "#ffd400"]]) {
+            for (const [w, c] of [[lw + 3, "rgba(0,0,0,.45)"], [lw, "#ffd400"]]) {
               ctx.lineWidth = w; ctx.strokeStyle = c; ctx.beginPath();
               path.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
             }
@@ -385,10 +397,16 @@
     // мітки: дальні першими, ближні поверх
     const order = rp.filter((r) => r.d <= MAX_DIST).sort((a, b) => b.d - a.d);
     for (const r of order) {
-      const s = project(cam, W, H, r.dx, r.dy);
-      if (!s || s[0] < -40 || s[0] > W + 40 || s[1] < -40 || s[1] > H + 40) continue;
+      const g = project(cam, W, H, r.dx, r.dy);            // точка на землі
+      const s = project(cam, W, H, r.dx, r.dy, 1.2);       // верх «стовпчика» 1,2 м
+      if (!g || !s || s[0] < -40 || s[0] > W + 40 || s[1] < -40 || g[1] > H + 200) continue;
       const isT = r.p.n === S.target;
       const rad = Math.max(7, Math.min(18, 18 - r.d / 12)) + (isT ? 3 : 0);
+      // стовпчик від землі до мітки і «п'ята» на землі — видно, де саме точка
+      ctx.lineWidth = 5; ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.beginPath(); ctx.moveTo(g[0], g[1]); ctx.lineTo(s[0], s[1]); ctx.stroke();
+      ctx.lineWidth = 2.5; ctx.strokeStyle = isT ? "#ff3b30" : "#ffd400"; ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(g[0], g[1], Math.max(4, rad * 0.7), Math.max(2, rad * 0.25), 0, 0, Math.PI * 2);
+      ctx.fillStyle = isT ? "#ff3b30" : "#ffd400"; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = "#fff"; ctx.stroke();
       ctx.beginPath(); ctx.arc(s[0], s[1], rad, 0, Math.PI * 2);
       ctx.fillStyle = isT ? "#ff3b30" : "#ffd400"; ctx.fill();
       ctx.lineWidth = 2.5; ctx.strokeStyle = "#fff"; ctx.stroke();
@@ -455,6 +473,30 @@
     $("#arCanvas").hidden = $("#arCross").hidden = m !== "cam";
     $("#arVideo").style.opacity = m === "cam" ? 1 : 0.25;
     $("#arMode").textContent = m === "cam" ? "🧭 Стрілка" : "📷 Камера";
+  }
+
+  // Підгонка пальцем: вгору/вниз — нахил (межі лягають на землю), вліво/вправо — напрям.
+  // Поправка нахилу — властивість телефона, тому запам'ятовується.
+  let dragMoved = false;
+  function bindDrag(cv) {
+    let last = null, total = 0;
+    cv.addEventListener("pointerdown", (e) => { last = [e.clientX, e.clientY]; total = 0; dragMoved = false; cv.setPointerCapture?.(e.pointerId); });
+    cv.addEventListener("pointermove", (e) => {
+      if (!last || !S) return;
+      const dx = e.clientX - last[0], dy = e.clientY - last[1];
+      total += Math.abs(dx) + Math.abs(dy);
+      if (total < 10) return;
+      dragMoved = true;
+      last = [e.clientX, e.clientY];
+      const k = 1 / (S.f * D2R);                       // пікселі → градуси
+      S.headOff = wrap180(S.headOff - dx * k);
+      S.pitchOff = Math.max(-15, Math.min(15, S.pitchOff + dy * k));
+    });
+    const end = () => {
+      if (last && dragMoved && S) { try { localStorage.setItem("kd_ar_pitch", S.pitchOff.toFixed(2)); } catch {} }
+      last = null;
+    };
+    cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
   }
 
   function onTapCanvas(e) {
@@ -600,7 +642,7 @@
       const tt = rp && rp.find((r) => r.p.n === S.target);
       if (c === "pos" && tt) { S.posOff = [S.posOff[0] + tt.dx, S.posOff[1] + tt.dy]; if (!S.frozen) toggleFreeze(); }
       if (c === "head" && tt && heading() != null) S.headOff = wrap180(S.headOff + wrap180(tt.b - heading()));
-      if (c === "reset") { S.posOff = [0, 0]; S.headOff = 0; }
+      if (c === "reset") { S.posOff = [0, 0]; S.headOff = 0; S.pitchOff = 0; try { localStorage.removeItem("kd_ar_pitch"); } catch {} if (S.frozen) toggleFreeze(); }
       sh.hidden = true;
     }));
     $("#arFov").oninput = (e) => {
