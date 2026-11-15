@@ -90,16 +90,6 @@
   // Магнітне схилення для України ≈ +6…+10° (східне), росте зі сходом.
   const declination = (lng) => 1 + 0.25 * lng;
 
-  // W3C: напрям задньої камери з alpha/beta/gamma (для absolute-подій Android)
-  function backCameraHeading(alpha, beta, gamma) {
-    const x = beta * D2R, y = gamma * D2R, z = alpha * D2R;
-    const cX = Math.cos(x), cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
-    const Vx = -cZ * sY - sZ * sX * cY, Vy = -sZ * sY + cZ * sX * cY;
-    let h = Math.atan(Vx / Vy);
-    if (Vy < 0) h += Math.PI; else if (Vx < 0) h += 2 * Math.PI;
-    return h / D2R;
-  }
-
   // ------------------------------------------------------------ стан і UI
   let S = null;
 
@@ -112,7 +102,8 @@
       parcel, pts: c.points, rings: c.rings, mode: "cam", pos: null, rawHeading: null, headAcc: null,
       heading: null, pitch: 0, headOff: 0, posOff: [0, 0], target: null, near: false,
       fovLong: +(localStorage.getItem("kd_ar_fov") || 67), stream: null, watch: null, raf: 0,
-      absolute: false,
+      absolute: false, rawBasis: null, yawOff: null, oriCount: 0,
+      fixes: [], frozen: null, shown: null,
       // рентген: ділянки навколо з векторного шару
       xray: opts.xray ?? !parcel, around: null, F0: null, loadedAt: null, loading: false, xscreen: [],
     };
@@ -139,6 +130,7 @@
           <button class="ar-btn wide" id="arXray">${(opts.xray ?? !parcel) ? "🩻 Рентген: увімк." : "🩻 Рентген"}</button>
           <button class="ar-btn wide" id="arCal">🎯 Калібрувати</button>
         </div>
+        <div class="ar-row"><button class="ar-btn wide" id="arFreeze">📌 Зафіксувати</button></div>
         <p class="ar-note">Точність орієнтовна (±3–10 м). Для виносу меж в натуру потрібен землевпорядник.</p>
       </div>
       <div class="ar-sheet" id="arCalSheet" hidden></div>`;
@@ -149,6 +141,7 @@
     $("#arMode") && ($("#arMode").onclick = () => setMode(S.mode === "cam" ? "arrow" : "cam"));
     $("#arXray").onclick = () => { S.xray = !S.xray; $("#arXray").textContent = S.xray ? "🩻 Рентген: увімк." : "🩻 Рентген"; if (S.xray) loadAround(); };
     $("#arCal").onclick = openCal;
+    $("#arFreeze").onclick = toggleFreeze;
     $("#arCanvas").addEventListener("click", onTapCanvas);
     start();
   }
@@ -203,29 +196,97 @@
 
   function onPos(p) {
     if (!S) return;
-    S.pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
+    const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.max(2, p.coords.accuracy || 10), t: Date.now() };
+    S.fixes.push(fix);
+    S.fixes = S.fixes.filter((f) => Date.now() - f.t < 20000).slice(-20);
+    if (S.frozen) { S.pos = { ...S.frozen, acc: fix.acc }; return; }
+
+    // стоїмо? — усі фікси за останні 20 с у межах ~3 м один від одного
+    const F = localFrame(fix.lat, fix.lng);
+    const xy = S.fixes.map((f) => ({ ...f, p: F.to(f.lat, f.lng) }));
+    const still = xy.length >= 3 && xy.every((f) => Math.hypot(f.p[0], f.p[1]) < 3);
+    let est = fix;
+    if (still) {
+      // зважене середнє (вага 1/acc²): прибирає стрибки, коли стоїмо на точці
+      let sw = 0, sx = 0, sy = 0, sa = 0;
+      for (const f of xy) { const w = 1 / (f.acc * f.acc); sw += w; sx += f.p[0] * w; sy += f.p[1] * w; sa += f.acc * w; }
+      const [lat, lng] = F.from(sx / sw, sy / sw);
+      est = { lat, lng, acc: Math.max(1.5, (sa / sw) / Math.sqrt(xy.length)) };
+    }
+    // мертва зона: не рухаємо картинку через зміну меншу, ніж третина точності
+    if (S.shown) {
+      const [dx, dy] = localFrame(S.shown.lat, S.shown.lng).to(est.lat, est.lng);
+      if (Math.hypot(dx, dy) < Math.max(0.7, est.acc * 0.3)) { S.pos = { ...S.shown, acc: est.acc }; return; }
+    }
+    S.shown = { lat: est.lat, lng: est.lng };
+    S.pos = est;
     if (S.xray) loadAround();
   }
 
-  function onOri(e) {
-    if (!S) return;
-    let h = null;
-    if (typeof e.webkitCompassHeading === "number" && e.webkitCompassHeading >= 0) {
-      h = e.webkitCompassHeading;                         // iOS: магнітний курс
-      S.headAcc = e.webkitCompassAccuracy;
-    } else if ((e.absolute || e.type === "deviceorientationabsolute") && e.alpha != null) {
-      if (e.type === "deviceorientation" && S.absolute) return;   // є краще джерело
-      if (e.type === "deviceorientationabsolute") S.absolute = true;
-      h = backCameraHeading(e.alpha, e.beta || 0, e.gamma || 0);
-    }
-    if (e.beta != null) S.pitch = S.pitch * 0.8 + (e.beta - 90) * 0.2;    // + — камера дивиться вгору
-    if (h == null) return;
-    const lng = S.pos?.lng ?? 30;
-    h = (h + declination(lng) + 360) % 360;              // магнітна → географічна північ
-    S.rawHeading = S.rawHeading == null ? h : (S.rawHeading + wrap180(h - S.rawHeading) * 0.25 + 360) % 360;
+  function toggleFreeze() {
+    if (!S.pos) return;
+    S.frozen = S.frozen ? null : { lat: S.pos.lat, lng: S.pos.lng };
+    $("#arFreeze").textContent = S.frozen ? "📌 Зафіксовано" : "📌 Зафіксувати";
+    $("#arFreeze").classList.toggle("on", !!S.frozen);
   }
 
-  const heading = () => (S.rawHeading == null ? null : (S.rawHeading + S.headOff + 360) % 360);
+  // Матриця повороту «пристрій → світ» (W3C: Rz(alpha)·Rx(beta)·Ry(gamma)).
+  // Світ: x — схід, y — північ, z — угору. Пристрій: x — вправо, y — вгору екрана, z — з екрана.
+  function deviceBasis(alpha, beta, gamma) {
+    const a = alpha * D2R, b = beta * D2R, g = gamma * D2R;
+    const cA = Math.cos(a), sA = Math.sin(a), cB = Math.cos(b), sB = Math.sin(b), cG = Math.cos(g), sG = Math.sin(g);
+    // стовпці R: образи осей пристрою у світі
+    const X = [cA * cG - sA * sB * sG, sA * cG + cA * sB * sG, -cB * sG];
+    const Y = [-sA * cB, cA * cB, sB];
+    const Z = [cA * sG + sA * sB * cG, sA * sG - cA * sB * cG, cB * cG];
+    // задня камера дивиться вздовж -Z пристрою; «верх» кадру у портреті — +Y; «право» — +X
+    return { fw: [-Z[0], -Z[1], -Z[2]], rt: X, up: Y };
+  }
+  const yawOf = (v) => (Math.atan2(v[0], v[1]) / D2R + 360) % 360;   // азимут вектора (0 — північ)
+  const rotZ = (v, deg) => { const r = deg * D2R, c = Math.cos(r), s = Math.sin(r); return [v[0] * c + v[1] * s, -v[0] * s + v[1] * c, v[2]]; };
+
+  function onOri(e) {
+    if (!S || e.alpha == null) return;
+    const isAbs = e.absolute || e.type === "deviceorientationabsolute";
+    if (e.type === "deviceorientation" && S.absolute) return;   // Android: є краще джерело
+    if (e.type === "deviceorientationabsolute") S.absolute = true;
+
+    // 1) плавна орієнтація з гіроскопа/акселерометра (без тремтіння компаса)
+    const basis = deviceBasis(e.alpha, e.beta || 0, e.gamma || 0);
+    S.rawBasis = basis;
+    const gyroYaw = yawOf(basis.fw);
+
+    // 2) абсолютний курс компаса — лише щоб повільно поправляти дрейф гіроскопа
+    let compass = null;
+    if (typeof e.webkitCompassHeading === "number" && e.webkitCompassHeading >= 0) {
+      compass = e.webkitCompassHeading;                   // iOS: магнітний курс
+      S.headAcc = e.webkitCompassAccuracy;
+    } else if (isAbs) {
+      compass = gyroYaw;                                  // Android: alpha вже від півночі
+    }
+    if (compass != null) {
+      compass = (compass + declination(S.pos?.lng ?? 30) + 360) % 360;   // → географічна північ
+      const diff = wrap180(compass - gyroYaw);
+      const bad = S.headAcc != null && (S.headAcc < 0 || S.headAcc > 25);
+      if (S.yawOff == null) S.yawOff = diff;
+      else if (!bad) {
+        // комплементарний фільтр: швидко на старті (перша секунда), далі повільно
+        // (0,3% за подію ≈ стала часу 7 с на 50 Гц) — шум компаса не проходить, дрейф гіроскопа знімається
+        const k = S.oriCount < 50 ? 0.15 : 0.003;
+        S.yawOff = wrap180(S.yawOff + wrap180(diff - S.yawOff) * k);
+      }
+    }
+    S.oriCount = (S.oriCount || 0) + 1;
+    S.pitch = Math.asin(Math.max(-1, Math.min(1, basis.fw[2]))) / D2R;
+  }
+
+  // Базис камери у світі з усіма поправками (компас + ручне калібрування)
+  function cameraBasis() {
+    if (!S.rawBasis || S.yawOff == null) return null;
+    const d = S.yawOff + S.headOff;
+    return { fw: rotZ(S.rawBasis.fw, d), rt: rotZ(S.rawBasis.rt, d), up: rotZ(S.rawBasis.up, d) };
+  }
+  const heading = () => { const b = cameraBasis(); return b ? yawOf(b.fw) : null; };
 
   // ------------------------------------------------------------ розрахунки
   function rel() {                                        // точки відносно користувача, м (схід, північ)
@@ -243,13 +304,7 @@
     const vw = v.videoWidth || W, vh = v.videoHeight || H;
     const fv = (Math.max(vw, vh) / 2) / Math.tan(S.fovLong / 2 * D2R);
     const scale = Math.max(W / vw, H / vh);              // object-fit: cover
-    const psi = heading() * D2R, th = S.pitch * D2R;
-    return {
-      f: fv * scale,
-      fw: [Math.sin(psi) * Math.cos(th), Math.cos(psi) * Math.cos(th), Math.sin(th)],
-      rt: [Math.cos(psi), -Math.sin(psi), 0],
-      up: [-Math.sin(psi) * Math.sin(th), -Math.cos(psi) * Math.sin(th), Math.cos(th)],
-    };
+    return { f: fv * scale, ...cameraBasis() };
   }
 
   function project(cam, W, H, dx, dy) {
@@ -273,8 +328,9 @@
     const parts = [];
     if (!S.pos) parts.push("Очікую GPS…");
     else parts.push(`GPS ±${Math.round(S.pos.acc)} м`);
-    if (S.rawHeading == null) parts.push("компас: немає");
-    else if (S.headAcc != null && (S.headAcc < 0 || S.headAcc > 20)) parts.push("компас ненадійний");
+    if (S.frozen) parts.push("позицію зафіксовано");
+    if (heading() == null) parts.push(S.rawBasis ? "компас: чекаю…" : "компас: немає");
+    else if (S.headAcc != null && (S.headAcc < 0 || S.headAcc > 25)) parts.push("компас ненадійний — опишіть телефоном вісімку");
     if (S.posOff[0] || S.posOff[1] || S.headOff) parts.push("калібровано");
     status(parts.join(" · "));
   }
@@ -542,7 +598,7 @@
       const c = b.dataset.c;
       const rp = rel();
       const tt = rp && rp.find((r) => r.p.n === S.target);
-      if (c === "pos" && tt) S.posOff = [S.posOff[0] + tt.dx, S.posOff[1] + tt.dy];
+      if (c === "pos" && tt) { S.posOff = [S.posOff[0] + tt.dx, S.posOff[1] + tt.dy]; if (!S.frozen) toggleFreeze(); }
       if (c === "head" && tt && heading() != null) S.headOff = wrap180(S.headOff + wrap180(tt.b - heading()));
       if (c === "reset") { S.posOff = [0, 0]; S.headOff = 0; }
       sh.hidden = true;

@@ -293,3 +293,4 @@ a { color: var(--accent); }
 .tm-res { margin-top: 6px; }
 
 .ar-top { align-items: center; }
+.ar-btn.on { background: rgba(255,212,0,.85); color: #111; }
