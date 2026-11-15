@@ -245,9 +245,12 @@
       if (seq !== searchSeq) return;
       const items = r.items || [];
       if (!items.length) { closeSheet(); hl.clearLayers(); toast("Тут ділянок не знайдено"); return; }
-      if (items.length === 1) return showParcel(items[0], { fit: false });
-      sheetHtml(`<p class="sub">Тут кілька ділянок:</p><ul class="pick">${items.map((p, i) =>
-        `<li><button data-i="${i}">${esc(p.cadnum || "без номера")}</button></li>`).join("")}</ul>`);
+      if (items.length === 1) {
+        if (items[0].near_m) toast(`У самій точці ділянки немає — знайдено поруч (≈${items[0].near_m} м)`, 3000);
+        return showParcel(items[0], { fit: false });
+      }
+      sheetHtml(`<p class="sub">${items[0].near_m ? `У самій точці ділянки немає, поруч (≈${items[0].near_m} м) є кілька:` : "Тут кілька ділянок:"}</p><ul class="pick">${items.map((p, i) =>
+        `<li><button data-i="${i}">${esc(p.cadnum || "без номера")}${p.area ? ` <small>· ${esc(p.area)} ${esc(p.unit || "га")}</small>` : ""}</button></li>`).join("")}</ul>`);
       $("#sheetBody").querySelectorAll("[data-i]").forEach((b) =>
         b.addEventListener("click", () => showParcel(items[+b.dataset.i], { fit: false })));
     } catch (err) {

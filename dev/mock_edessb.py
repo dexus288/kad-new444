@@ -80,9 +80,18 @@ def dzk_api(req: Request, cad_num: str = ""):
         "ppoint": "POINT(30.4067 50.3435)", "zoom_to": "POLYGON((…))", "geom": p["geom"], "centroid": p["centroid"]}}))
 
 
+DZK_HITS = {"n": 0}
+
+
+@app.get("/dzk-hits")
+def dzk_hits():
+    return DZK_HITS
+
+
 @app.get("/api-user/dzk")
 def dzk_point(req: Request, lng: float, lat: float):
     """Як справжній /api-user/dzk?lng=…&lat=…: ділянка в точці або 404."""
+    DZK_HITS["n"] += 1
     if not alive(req):
         return touch(Response("<html><title>ЄДЕССБ - час відповіді на запит закінчився!</title></html>",
                               status_code=403, media_type="text/html"))

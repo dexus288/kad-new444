@@ -235,31 +235,47 @@ class Edessb:
             db.conn().execute("INSERT OR REPLACE INTO parcel_cache(cadnum, data, fetched_at) VALUES (?,?,?)",
                               (p["cadnum"], json.dumps(p, ensure_ascii=False), int(time.time())))
 
+    async def _identify_edessb_point(self, lat: float, lng: float, zoom: int) -> list[dict]:
+        """Один запит до ЄДЕССБ у точці. [] — нічого не знайдено; помилки — UpstreamError."""
+        url = self._identify_request_url(lat, lng, zoom)
+        try:
+            resp = await self._get(url, "application/json, */*")
+        except UpstreamError as e:
+            if e.kind == "notfound":
+                return []
+            raise
+        data = self._json(resp)
+        if isinstance(data, dict) and data.get("success") is False:
+            return []
+        if isinstance(data, dict):
+            self._mark_session_ok()
+        up = dataclasses.replace(self.up, result_path=self.up.identify_result_path)
+        out = []
+        for p in parse_parcels(data, up):
+            if not p.get("geometry") and p.get("cadnum") and self.up.search_url:
+                try:
+                    p = await self.search(p["cadnum"])
+                except UpstreamError:
+                    pass
+            self._cache_parcel(p)
+            out.append(p)
+        return out
+
     async def identify(self, lat: float, lng: float, zoom: int) -> list[dict]:
         """Тап по карті.
 
-        1) ЄДЕССБ (identify_url, напр. /api-user/dzk?lng=…&lat=…) — одразу повні дані
-           і повний контур;
-        2) якщо ЄДЕССБ недоступна (сесія/мережа) або нічого не знайшла — векторні
-           тайли «сервера ДЗК (2)» (працюють і без сесії)."""
+        1) ЄДЕССБ (identify_url) у самій точці — повні дані і контур;
+        2) якщо в точці порожньо — ще кілька точок навколо (кільцями, ближче → далі):
+           межі ДЗК не завжди збігаються з тим, що видно, а палець на телефоні не точний;
+        3) якщо ЄДЕССБ недоступна або й навколо нічого немає — векторні тайли
+           «сервера ДЗК (2)»."""
         url = self._identify_request_url(lat, lng, zoom)
         edessb_err: UpstreamError | None = None
         if url:
             try:
-                resp = await self._get(url, "application/json, */*")
-                data = self._json(resp)
-                if isinstance(data, dict) and data.get("success") is not False:
-                    self._mark_session_ok()
-                up = dataclasses.replace(self.up, result_path=self.up.identify_result_path)
-                out = []
-                for p in parse_parcels(data, up):
-                    if not p.get("geometry") and p.get("cadnum") and self.up.search_url:
-                        try:
-                            p = await self.search(p["cadnum"])
-                        except UpstreamError:
-                            pass
-                    self._cache_parcel(p)
-                    out.append(p)
+                out = await self._identify_edessb_point(lat, lng, zoom)
+                if not out:
+                    out = await self._identify_around(lat, lng, zoom)
                 if out or not self.has_vector:
                     return out
             except UpstreamError as e:
@@ -270,11 +286,45 @@ class Edessb:
                 elif not self.has_vector:
                     return []
         if self.has_vector:
-            # сюди потрапляємо, коли ЄДЕССБ у точці нічого не знайшла (url є, помилки немає)
-            # або недоступна (edessb_err)
+            # сюди потрапляємо, коли ЄДЕССБ ні в точці, ні навколо нічого не знайшла
+            # (url є, помилки немає) або недоступна (edessb_err)
             return await self._identify_vector(lat, lng, edessb_err,
                                                point_checked=bool(url) and edessb_err is None)
         raise UpstreamError("config", "Пошук за точкою не налаштовано")
+
+    async def _identify_around(self, lat: float, lng: float, zoom: int) -> list[dict]:
+        """Опитує точки навколо тапу. Два кільця: ~6 і ~14 пікселів поточного масштабу
+        (на z17 це ≈5 і ≈12 м). Зупиняється, щойно щось знайдено на кільці."""
+        px = 156543.03 * math.cos(math.radians(lat)) / (2 ** zoom)   # метрів у пікселі
+        m_lat = 1 / 111320.0
+        m_lng = 1 / (111320.0 * math.cos(math.radians(lat)))
+        found: dict[str, dict] = {}
+        for ring_px, n in ((6, 4), (14, 8)):
+            r = max(2.0, min(40.0, ring_px * px))
+            pts = []
+            for i in range(n):
+                a = 2 * math.pi * i / n + (math.pi / 4 if n == 4 else 0)
+                pts.append((lat + r * math.cos(a) * m_lat, lng + r * math.sin(a) * m_lng))
+            results = await asyncio.gather(*(self._identify_edessb_point(la, ln, zoom) for la, ln in pts),
+                                           return_exceptions=True)
+            err = None
+            for res in results:
+                if isinstance(res, UpstreamError):
+                    err = res
+                    continue
+                if isinstance(res, Exception):
+                    continue
+                for p in res:
+                    cad = p.get("cadnum") or f"?{len(found)}"
+                    if cad not in found:
+                        p = dict(p)
+                        p["near_m"] = round(r)
+                        found[cad] = p
+            if found:
+                break
+            if err is not None and not found:
+                raise err
+        return list(found.values())
 
     async def _identify_vector(self, lat: float, lng: float,
                                edessb_err: UpstreamError | None = None,
