@@ -19,6 +19,7 @@ from .cookiestore import parse_cookie_input
 from .edessb import check_once, read_status
 from .normalize import normalize_cadnum
 from . import timemachine as tm
+from .crm_api import router as crm_router
 from .upstream import TRANSPARENT_PNG, Edessb, UpstreamError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(crm_router)
 
 
 def E(req: Request) -> Edessb:
